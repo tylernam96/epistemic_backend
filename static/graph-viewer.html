@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Epistemic Graph</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;700;800&display=swap');
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+    --bg: #050608;         /* Deeper black */
+    --surface: #0a0c12; 
+    --border: #161b29;
+    --text: #8e99b3;       /* Muted text */
+    --muted: #3a415a;
+    /* Muted palette */
+    --concept:   #006d5b;  /* Darker Teal */
+    --observation: #a65129;/* Burnt Orange */
+    --method:    #6622aa;  /* Deep Purple */
+    --reference: #8c7600;  /* Mustard Gold */
+  --draft:     #5c667e;  /* Slate Blue */
+  --event:     #a33865;  /* Deep Rose */
+    }
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; overflow: hidden; }
+    #graph-container { position: fixed; inset: 0; }
+
+    #header {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 28px;
+      background: linear-gradient(to bottom, rgba(7,9,15,0.95), transparent);
+      pointer-events: none;
+    }
+    #link-mode-btn, #status-pill, #header h1 {
+      pointer-events: auto;
+    }
+    #header h1 { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #fff; }
+    #header h1 span { color: var(--concept); }
+    #status-pill { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    #status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); transition: background 0.4s; }
+    #status-dot.live { background: var(--concept); box-shadow: 0 0 8px var(--concept); }
+    #status-dot.error { background: #ff5a5a; }
+
+    #panel-left  { position: fixed; top: 72px; left: 0;  width: 270px; z-index: 10; display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
+    #panel-right { position: fixed; top: 72px; right: 0; width: 270px; z-index: 10; display: flex; flex-direction: column; gap: 10px; padding: 0 14px 14px; }
+
+    #node-inspector {
+        position: fixed; top: 72px; right: 14px; width: 320px;
+        background: rgba(14,17,24,0.95); border: 1px solid var(--border);
+        border-radius: 10px; padding: 20px; z-index: 25;
+        backdrop-filter: blur(16px); display: none;
+        max-height: calc(100vh - 100px); overflow-y: auto;
+        }
+    #node-inspector.visible { display: block; }
+    .neighbor-card {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 6px; padding: 10px; margin-top: 10px;
+        }
+    .neighbor-header { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; }
+    .neighbor-name { color: #fff; font-weight: 600; cursor: pointer; }
+    .neighbor-name:hover { color: var(--concept); }
+
+    .panel-card { background: rgba(14,17,24,0.88); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; backdrop-filter: blur(12px); }
+    .card-label { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+    .stat-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; margin-bottom: 6px; }
+    .stat-val { font-size: 20px; font-weight: 500; color: #fff; font-family: 'Syne', sans-serif; }
+
+    /* Search */
+    .search-wrap { position: relative; }
+    .search-wrap input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 8px 10px 8px 30px; color: var(--text); font-family: 'DM Mono', monospace; font-size: 12px; outline: none; transition: border-color 0.2s; }
+    .search-wrap input:focus { border-color: var(--concept); }
+    .search-icon { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 13px; pointer-events: none; }
+    #search-results { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; }
+    .search-result-item { padding: 6px 9px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid transparent; transition: border-color 0.15s, background 0.15s; display: flex; align-items: center; gap: 7px; }
+    .search-result-item:hover { border-color: var(--concept); background: rgba(74,240,196,0.06); color: var(--concept); }
+    .search-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Date */
+    .date-display { font-size: 13px; color: #fff; text-align: center; margin-bottom: 4px; font-family: 'Syne', sans-serif; }
+    .date-sub { font-size: 10px; color: var(--muted); text-align: center; margin-bottom: 10px; }
+    input[type=range] { width: 100%; accent-color: var(--concept); cursor: pointer; }
+    .date-row { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 4px; }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 11px; color: var(--text); }
+    .toggle { position: relative; width: 34px; height: 18px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; inset: 0; background: var(--border); border-radius: 18px; cursor: pointer; transition: background 0.2s; }
+    .toggle-slider:before { content: ''; position: absolute; width: 12px; height: 12px; left: 3px; top: 3px; background: var(--muted); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+    .toggle input:checked + .toggle-slider { background: rgba(74,240,196,0.2); }
+    .toggle input:checked + .toggle-slider:before { transform: translateX(16px); background: var(--concept); }
+
+    /* Controls */
+    .ctrl-row { display: flex; flex-direction: column; gap: 8px; }
+    .ctrl-label { font-size: 10px; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; display: flex; justify-content: space-between; }
+    .ctrl-val { color: var(--text); }
+    button.ctrl-btn { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
+    button.ctrl-btn:hover { border-color: var(--concept); color: var(--concept); }
+    #api-input { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 7px 10px; color: var(--text); font-family: 'DM Mono', monospace; font-size: 11px; outline: none; transition: border-color 0.2s; }
+    #api-input:focus { border-color: var(--method); }
+
+    /* Legend */
+    .legend-section { display: flex; flex-direction: column; gap: 5px; }
+    .legend-divider { height: 1px; background: var(--border); margin: 4px 0; }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .legend-dot.version { opacity: 0.45; }
+    .legend-line { width: 20px; height: 2px; border-radius: 2px; flex-shrink: 0; }
+    .legend-hint { font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+    /* Node type filter chips */
+    #type-filters { display: flex; flex-wrap: wrap; gap: 5px; }
+    .type-chip {
+      padding: 3px 9px; border-radius: 20px; font-size: 10px; letter-spacing: 0.06em;
+      cursor: pointer; border: 1px solid transparent; transition: opacity 0.2s;
+      user-select: none;
+    }
+    .type-chip.off { opacity: 0.3; }
+
+    /* Edge Inspector */
+    #edge-inspector {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      width: 560px; max-width: calc(100vw - 580px);
+      background: rgba(14,17,24,0.97); border: 1px solid var(--border);
+      border-radius: 10px; padding: 16px 20px; z-index: 20;
+      backdrop-filter: blur(16px); display: none;
+    }
+    #edge-inspector.visible { display: block; }
+    .insp-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; gap: 12px; }
+    .insp-header-left { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .insp-title { font-family: 'Syne', sans-serif; font-size: 13px; color: #fff; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .insp-badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; width: fit-content; }
+    .insp-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 16px; flex-shrink: 0; }
+    .insp-close:hover { color: #fff; }
+    .insp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .insp-field { display: flex; flex-direction: column; gap: 3px; }
+    .insp-field.full { grid-column: 1 / -1; }
+    .insp-key { font-size: 9px; letter-spacing: 0.15em; text-transform: uppercase; color: var(--muted); }
+    .insp-val { font-size: 12px; color: var(--text); line-height: 1.5; }
+    .insp-val.big { color: var(--concept); font-size: 18px; font-family: 'Syne', sans-serif; }
+    .weight-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+    .weight-fill { height: 100%; background: var(--concept); border-radius: 2px; transition: width 0.4s; }
+
+    /* Tooltip */
+    #tooltip { position: fixed; z-index: 20; background: rgba(14,17,24,0.95); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; pointer-events: none; opacity: 0; transition: opacity 0.15s; max-width: 260px; backdrop-filter: blur(10px); }
+    #tooltip.visible { opacity: 1; }
+    .tt-type { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 4px; }
+    .tt-name { color: #fff; font-weight: 500; margin-bottom: 4px; line-height: 1.4; }
+    .tt-meta { color: var(--muted); font-size: 10px; line-height: 1.6; }
+
+    #error-msg { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(255,90,90,0.12); border: 1px solid rgba(255,90,90,0.4); color: #ff9090; padding: 10px 20px; border-radius: 6px; font-size: 12px; z-index: 30; display: none; text-align: center; max-width: 400px; }
+  #node-inspector {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 300px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 15px;
+  z-index: 1000;
+  display: none; /* Hidden by default */
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+}
+
+.neighbor-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.neighbor-name {
+  color: #fff;
+  font-weight: bold;
+  cursor: pointer;
+  margin: 5px 0;
+}
+
+.neighbor-name:hover {
+  text-decoration: underline;
+  color: var(--concept);
+}
+
+.insp-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.2);
+}
+  
+  </style>
+</head>
+<body>
+
+<div id="graph-container"></div>
+
+<div id="header">
+  <h1>Epistemic <span>Graph</span></h1>
+  
+  <div id="status-pill">
+    <div id="status-dot"></div>
+    <span id="status-text">connecting…</span>
+  </div>
+
+  <button id="link-mode-btn" onclick="toggleLinkMode()">
+    Link Mode: <span>OFF</span>
+  </button>
+</div>
+
+<!-- LEFT PANEL -->
+<div id="panel-left">
+  <div class="panel-card">
+    <div class="card-label">Search Nodes</div>
+    <div class="search-wrap">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="search-input" placeholder="Type to search…" oninput="handleSearch(this.value)" autocomplete="off"/>
+    </div>
+    <div id="search-results"></div>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-label">Filter by Type</div>
+    <div id="type-filters"></div>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-label">Time Filter</div>
+    <div class="date-display" id="date-display">All time</div>
+    <div class="date-sub" id="date-sub">slide to filter active versions</div>
+    <input type="range" id="date-slider" min="0" max="100" value="100" oninput="handleDateSlider(this.value)"/>
+    <div class="date-row">
+      <span id="date-min-label">—</span>
+      <span id="date-max-label">—</span>
+    </div>
+    <div class="toggle-row">
+      <span>Show all</span>
+      <label class="toggle">
+        <input type="checkbox" id="show-all-toggle" checked onchange="applyFilters()"/>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-label">Visible</div>
+    <div class="stat-row"><span>Nodes</span><span class="stat-val" id="node-count">—</span></div>
+    <div class="stat-row"><span>Links</span><span class="stat-val" id="link-count">—</span></div>
+  </div>
+</div>
+
+<!-- RIGHT PANEL -->
+<div id="panel-right">
+  <div class="panel-card">
+    <div class="card-label">Data Source</div>
+    <div class="ctrl-row">
+      <input id="api-input" type="text" value="http://localhost:8000/graph/3d-json" spellcheck="false"/>
+      <button class="ctrl-btn" onclick="loadGraph()">↻ Reload</button>
+    </div>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-label">Simulation</div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">Link Distance <span class="ctrl-val" id="dist-val">60</span></span>
+      <input type="range" id="link-dist" min="20" max="200" value="60" oninput="updateLinkDist(this.value)"/>
+      <span class="ctrl-label">Charge Strength <span class="ctrl-val" id="charge-val">-120</span></span>
+      <input type="range" id="charge" min="-500" max="-20" value="-120" oninput="updateCharge(this.value)"/>
+    </div>
+  </div>
+
+  <div class="panel-card">
+    <div class="card-label">Node Types</div>
+    <div class="legend-section">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--concept)"></div><span>Concept</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--concept)"></div><span style="color:#556080">ConceptVersion</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--observation)"></div><span>Observation</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--observation)"></div><span style="color:#556080">ObservationVersion</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--method)"></div><span>Method</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--method)"></div><span style="color:#556080">MethodVersion</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--reference)"></div><span>Reference</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--reference)"></div><span style="color:#556080">ReferenceVersion</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--draft)"></div><span>Draft Fragment</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--draft)"></div><span style="color:#556080">DraftFragmentVersion</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--event)"></div><span>Event</span></div>
+      <div class="legend-item"><div class="legend-dot version" style="background:var(--event)"></div><span style="color:#556080">EventVersion</span></div>
+      <div class="legend-divider"></div>
+      <div class="legend-item"><div class="legend-line" style="background:rgba(80,90,130,0.4)"></div><span>HAS_VERSION</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#dc143c"></div><span>CONTRADICTS</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#00c8a0"></div><span>supports / enables</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#c8a800"></div><span>partially_supports</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#9933ff"></div><span>depends_on</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#e8723a"></div><span>amplifies</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#8896b8"></div><span>requires / influences</span></div>
+      <div class="legend-item"><div class="legend-line" style="background:#e85090"></div><span>triggers</span></div>
+      <div class="legend-hint">Click any RELATION link to inspect</div>
+    </div>
+  </div>
+</div>
+
+<!-- Edge Inspector -->
+<div id="edge-inspector">
+  <div class="insp-header">
+    <div class="insp-header-left">
+      <span class="insp-title" id="insp-title">—</span>
+      <span class="insp-badge" id="insp-badge">—</span>
+    </div>
+    <button class="insp-close" onclick="closeInspector()">✕</button>
+  </div>
+  <div class="insp-grid">
+    <div class="insp-field">
+      <span class="insp-key">Weight</span>
+      <span class="insp-val big" id="insp-weight">—</span>
+      <div class="weight-bar"><div class="weight-fill" id="weight-fill" style="width:0%"></div></div>
+    </div>
+    <div class="insp-field">
+      <span class="insp-key">Relation ID</span>
+      <span class="insp-val" id="insp-rid">—</span>
+    </div>
+    <div class="insp-field">
+      <span class="insp-key">Valid From</span>
+      <span class="insp-val" id="insp-vfrom">—</span>
+    </div>
+    <div class="insp-field">
+      <span class="insp-key">Valid To</span>
+      <span class="insp-val" id="insp-vto">—</span>
+    </div>
+    <div class="insp-field full" id="insp-mech-row" style="display:none">
+      <span class="insp-key">Mechanism</span>
+      <span class="insp-val" id="insp-mechanism">—</span>
+    </div>
+    <div class="insp-field full" id="insp-just-row" style="display:none">
+      <span class="insp-key">Justification</span>
+      <span class="insp-val" id="insp-justification">—</span>
+    </div>
+  </div>
+</div>
+
+<div id="tooltip">
+  <div class="tt-type" id="tt-type"></div>
+  <div class="tt-name" id="tt-name"></div>
+  <div class="tt-meta" id="tt-meta"></div>
+</div>
+<div id="error-msg"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://unpkg.com/3d-force-graph@1.73.0/dist/3d-force-graph.min.js"></script>
+
+<script>
+
+  let Graph;
+  let allNodes = [], allLinks = [];
+  let dateMin = null, dateMax = null, currentDate = null;
+  let activeTypes = new Set(['Concept','Observation','Method','Reference','DraftFragment','Event']);
+  let isLinkMode = false;
+    let firstNode = null;
+
+    function toggleLinkMode() {
+    isLinkMode = !isLinkMode;
+    const btn = document.getElementById('link-mode-btn');
+    
+    if (isLinkMode) {
+        btn.classList.add('active');
+        btn.querySelector('span').textContent = 'ON';
+        firstNode = null; 
+        alert("Link Mode Active: Click a source node, then a target node to create a relation.");
+    } else {
+        btn.classList.remove('active');
+        btn.querySelector('span').textContent = 'OFF';
+        firstNode = null;
+    }
+    }
+
+    function closeNodeInspector() {
+  document.getElementById('node-inspector').classList.remove('visible');
+}
+
+function openNodeInspector(node, neighbors) {
+    const panel = document.getElementById('node-inspector');
+    const list = document.getElementById('neighbor-list');
+    
+    // Set Main Header (Clicked Node)
+    // If the node object has 'content', use it, otherwise use 'name'
+    document.getElementById('node-insp-name').textContent = node.content || node.name || "Focus Node";
+    
+    list.innerHTML = neighbors.map(nb => {
+        return `
+        <div class="neighbor-card">
+            <div class="neighbor-header">
+                <span class="insp-badge" style="border-color: ${nb.color}; color: ${nb.color}">
+                    ${nb.rel_type || 'RELATION'}
+                </span>
+                <span style="font-family: 'DM Mono'; font-size: 9px; color: var(--muted);">
+                    ${nb.code || ''} 
+                </span>
+            </div>
+            
+            <div class="neighbor-name" onclick="focusNodeById('${nb.neighbor_id}')" style="font-size: 13px; line-height: 1.4;">
+                ${nb.name || "Untitled Concept"}
+            </div>
+
+            ${nb.justification ? `
+                <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05); font-style: italic; font-size: 11px;">
+                    "${nb.justification}"
+                </div>
+            ` : ''}
+        </div>
+        `;
+    }).join('');
+
+    panel.style.display = 'block';
+}
+// Helper to focus node from the list
+function focusNodeById(id) {
+  const node = allNodes.find(n => n.id === id);
+  if (node) focusNode(node);
+}
+    
+function createLink(sourceId, targetId, relType, justification, color) {
+  const payload = {
+    node_a: sourceId,
+    node_b: targetId,
+    rel_type: relType,
+    justification: justification,
+    mechanism: document.getElementById('mechanism').value || "", // From your modal
+    color: color,
+    weight: 1.0,
+    valid_from: new Date().toISOString()
+  };
+
+  fetch('/engine/link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  .then(res => res.ok ? loadGraph() : alert("Error saving to DB"));
+}
+
+  // ── Colour system ─────────────────────────────────────────
+  const TYPE_COLORS = {
+    Concept:       '#008f72',
+    Observation:   '#a65129',
+    Method:        '#6622aa',
+    Reference:     '#8c7600',
+    DraftFragment: '#5c667e',
+    Event:         '#a33865',
+    Unknown:       '#2a3142',
+  };
+
+  const RELATION_COLORS = {
+    CONTRADICTS:        '#dc143c',
+    contradicts:        '#dc143c',
+    supports:           '#00c8a0',
+    SUPPORTS:           '#00c8a0',
+    partially_supports: '#c8a800',
+    depends_on:         '#9933ff',
+    amplifies:          '#e8723a',
+    enables:            '#00c8a0',
+    influences:         '#8896b8',
+    requires:           '#8896b8',
+    REQUIRES:           '#8896b8',
+    triggers:           '#e85090',
+    TRIGGERS:           '#e85090',
+  };
+
+  function nodeColor(node) {
+    const base = TYPE_COLORS[node.node_type] || '#556080';
+    if (node.is_version) {
+      // Dimmer version of parent colour
+      return base + '88';
+    }
+    return base;
+  }
+
+  function relColor(link) {
+    if (link.type !== 'RELATION') return 'rgba(80,90,130,0.25)';
+    return RELATION_COLORS[link.relation_type] || '#a8b4d0';
+  }
+
+  // ── Status ────────────────────────────────────────────────
+  function setStatus(state, text) {
+    document.getElementById('status-dot').className = state;
+    document.getElementById('status-text').textContent = text;
+  }
+  function showError(msg) {
+    const el = document.getElementById('error-msg');
+    el.textContent = msg; el.style.display = 'block';
+    setTimeout(() => el.style.display = 'none', 6000);
+  }
+
+  // ── Type filter chips ─────────────────────────────────────
+  function buildTypeFilters() {
+    const container = document.getElementById('type-filters');
+    container.innerHTML = '';
+    Object.entries(TYPE_COLORS).forEach(([type, color]) => {
+      if (type === 'Unknown') return;
+      const chip = document.createElement('div');
+      chip.className = 'type-chip';
+      chip.textContent = type === 'DraftFragment' ? 'Draft' : type;
+      chip.style.cssText = `background:${color}22;color:${color};border-color:${color}55;`;
+      chip.dataset.type = type;
+      chip.onclick = () => toggleType(type, chip);
+      container.appendChild(chip);
+    });
+  }
+
+  function toggleType(type, chip) {
+    if (activeTypes.has(type)) {
+      activeTypes.delete(type);
+      chip.classList.add('off');
+    } else {
+      activeTypes.add(type);
+      chip.classList.remove('off');
+    }
+    applyFilters();
+  }
+
+  // ── Date helpers ──────────────────────────────────────────
+  function parseDate(val) {
+    if (!val) return null;
+    if (typeof val === 'object' && val.year) return new Date(val.year, (val.month||1)-1, val.day||1);
+    const d = new Date(val);
+    return isNaN(d) ? null : d;
+  }
+  function fmtDate(d) { return d ? d.toISOString().slice(0,10) : '—'; }
+  function lerp(a, b, t) { return new Date(a.getTime() + (b.getTime()-a.getTime())*t); }
+
+  function initDateSlider(nodes) {
+    const dates = nodes.filter(n => n.valid_from).map(n => parseDate(n.valid_from)).filter(Boolean);
+    if (!dates.length) { document.getElementById('date-sub').textContent = 'no date data found'; return; }
+    dateMin = new Date(Math.min(...dates));
+    dateMax = new Date(Math.max(...dates));
+    currentDate = dateMax;
+    document.getElementById('date-min-label').textContent = fmtDate(dateMin);
+    document.getElementById('date-max-label').textContent = fmtDate(dateMax);
+  }
+
+  function handleDateSlider(val) {
+    if (!dateMin || !dateMax) return;
+    currentDate = lerp(dateMin, dateMax, val/100);
+    document.getElementById('date-display').textContent = fmtDate(currentDate);
+    const toggle = document.getElementById('show-all-toggle');
+    if (toggle.checked && +val < 100) toggle.checked = false;
+    applyFilters();
+  }
+
+  // ── Combined filter (type + date) ─────────────────────────
+  function applyFilters() {
+    const showAll = document.getElementById('show-all-toggle').checked;
+
+    let nodes = allNodes.filter(n => {
+      // Type filter — check node_type against active set
+      const t = n.node_type || 'Unknown';
+      if (!activeTypes.has(t)) return false;
+      // Date filter
+      if (showAll) return true;
+      if (!currentDate || !dateMin) return true;
+      const from = parseDate(n.valid_from), to = parseDate(n.valid_to);
+      const afterFrom = from ? currentDate >= from : true;
+      const beforeTo  = to   ? currentDate <= to   : true;
+      return afterFrom && beforeTo;
+    });
+
+    const activeIds = new Set(nodes.map(n => n.id));
+    const links = allLinks.filter(l => {
+      const s = typeof l.source==='object' ? l.source.id : l.source;
+      const t = typeof l.target==='object' ? l.target.id : l.target;
+      return activeIds.has(s) && activeIds.has(t);
+    });
+
+    if (showAll) {
+      document.getElementById('date-display').textContent = 'All time';
+      document.getElementById('date-sub').textContent = `${nodes.length} nodes visible`;
+    } else {
+      document.getElementById('date-sub').textContent = `${nodes.length} nodes active`;
+    }
+
+    updateGraphData(nodes, links);
+  }
+
+  // ── Graph ─────────────────────────────────────────────────
+  function updateGraphData(nodes, links) {
+    document.getElementById('node-count').textContent = nodes.length;
+    document.getElementById('link-count').textContent = links.length;
+    if (Graph) Graph.graphData({ nodes: [...nodes], links: [...links] });
+  }
+
+  function makeTextTexture(text, color) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 56;
+    const ctx = canvas.getContext('2d');
+    ctx.font = '500 17px monospace';
+    ctx.fillStyle = color || 'rgba(200,208,232,0.9)';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    let label = text || '';
+    while (ctx.measureText(label).width > 240 && label.length > 2) label = label.slice(0,-1);
+    if (label !== text) label += '…';
+    ctx.fillText(label, 128, 28);
+    return new THREE.CanvasTexture(canvas);
+  }
+
+  function initGraph(data) {
+    allNodes = data.nodes;
+    allLinks = data.links;
+    initDateSlider(allNodes);
+    buildTypeFilters();
+
+    const container = document.getElementById('graph-container');
+    if (Graph) { applyFilters(); return; }
+
+    Graph = ForceGraph3D()(container)
+      .backgroundColor('#07090f')
+      .graphData({ nodes: [...allNodes], links: [...allLinks] })
+      .nodeLabel(() => '')
+      .nodeColor(n => {
+        const c = TYPE_COLORS[n.node_type] || '#445070';
+        if (!n.is_version) {
+          if (n.node_type === 'Method' || n.node_type === 'Event') {
+            console.log('nodeColor called for', n.node_type, n.name, '→', c);
+          }
+          return c;
+        }
+        const col = new THREE.Color(c);
+        col.lerp(new THREE.Color('#05070a'), 0.6);
+        return '#' + col.getHexString();
+      })
+      .nodeOpacity(0.8)
+      .nodeResolution(16)
+      .nodeVal(n => n.is_version ? 1.2 : 2.5)
+      .nodeThreeObject(node => {
+        const typeColor = TYPE_COLORS[node.node_type] || '#445070';
+        const labelColor = node.is_version ? typeColor + '88' : typeColor + 'ff';
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: makeTextTexture(node.name || node.id, labelColor),
+          depthWrite: false,
+        }));
+        const scale = node.is_version ? 24 : 30;
+        sprite.scale.set(scale, scale/3, 1);
+        sprite.position.set(0, node.is_version ? 9 : 12, 0);
+        return sprite;
+      })
+      .nodeThreeObjectExtend(true)
+.linkColor(l => {
+  // Use the color saved in the relationship properties
+  if (l.props && l.props.color) return l.props.color;
+  
+  // Fallback for standard types
+  if (l.type === 'CONTRADICTS') return '#ff5a5a';
+  return '#4a5270'; 
+})
+      .linkOpacity(0.25)
+      .linkWidth(l => {
+        if (l.type !== 'RELATION') return 0.2;
+        // Map weight [0,1] → width [0.5, 8.0]; fallback mid if no weight
+        const w = (l.weight != null) ? Math.max(0, Math.min(1, l.weight)) : 0.5;
+        return 0.4 + w * 0.6;
+      })
+      .linkDirectionalArrowLength(4)
+      .linkDirectionalArrowRelPos(1)
+      .linkDirectionalArrowColor(l => relColor(l))
+      .linkDirectionalParticles(l => l.type === 'RELATION' ? 2 : 0)
+      .linkDirectionalParticleSpeed(0.004)
+      .linkDirectionalParticleWidth(l => {
+        if (l.type !== 'RELATION') return 0;
+        const w = (l.weight != null) ? Math.max(0, Math.min(1, l.weight)) : 0.5;
+        return 0.5 + w * 1.2;
+      })
+      .linkDirectionalParticleColor(l => relColor(l))
+      .onNodeHover(node => {
+        const tt = document.getElementById('tooltip');
+        if (node) {
+          const typeColor = TYPE_COLORS[node.node_type] || '#556080';
+          const typeEl = document.getElementById('tt-type');
+          typeEl.textContent = node.is_version ? `${node.node_type} · version` : node.node_type;
+          typeEl.style.color = typeColor;
+          document.getElementById('tt-name').textContent = node.name || node.id;
+          const from = parseDate(node.valid_from), to = parseDate(node.valid_to);
+          const dates = from ? `${fmtDate(from)} → ${to ? fmtDate(to) : 'present'}` : '';
+          const extra = node.source ? `source: ${node.source}` : node.status ? `status: ${node.status}` : node.method_type ? `type: ${node.method_type}` : '';
+          document.getElementById('tt-meta').textContent = [dates, extra].filter(Boolean).join('\n');
+          tt.classList.add('visible');
+          container.style.cursor = 'pointer';
+        } else {
+          tt.classList.remove('visible');
+          container.style.cursor = 'default';
+        }
+      })
+Graph.onNodeClick(node => {
+  if (isLinkMode) {
+    if (!firstNode) {
+      firstNode = node;
+      console.log("Source: " + node.name);
+    } else {
+      // Step 1: Relation Type
+      const relType = prompt(`Relation from ${firstNode.name} to ${node.name}\nType (e.g. SUPPORTS, CONTRADICTS):`);
+      if (!relType) { firstNode = null; return; }
+
+      // Step 2: Context/Description
+      const context = prompt(`Provide context for this relation (The "Why"):`);
+      
+      // Step 3: Pick a Color (Matches your UI)
+      const color = prompt(`Enter color hex (Teal: #00c8a0, Red: #ff5a5a, Gold: #ffcc00):`, "#00c8a0");
+
+      createLink(firstNode.id, node.id, relType, context, color);
+      toggleLinkMode(); 
+    }
+  } else {
+    // Fetch neighbor data from the new endpoint
+    fetch(`/graph/node/${node.id}/neighbors`)
+      .then(res => res.json())
+      .then(neighbors => {
+        openNodeInspector(node, neighbors);
+        focusNode(node);
+      });
+    focusNode(node);
+  }
+})
+      .onLinkClick(link => {
+        if (link.type === 'RELATION') openInspector(link);
+      });
+
+    document.addEventListener('mousemove', e => {
+      const tt = document.getElementById('tooltip');
+      tt.style.left = (e.clientX+14)+'px';
+      tt.style.top  = (e.clientY-10)+'px';
+    });
+    window.addEventListener('resize', () => {
+      Graph.width(window.innerWidth);
+      Graph.height(window.innerHeight);
+    });
+
+    applyFilters();
+  }
+
+  // ── Edge Inspector ────────────────────────────────────────
+  const BADGE_COLORS = {
+    CONTRADICTS:        { bg:'rgba(220,20,60,0.15)',   color:'#dc143c', border:'rgba(220,20,60,0.4)' },
+    contradicts:        { bg:'rgba(220,20,60,0.15)',   color:'#dc143c', border:'rgba(220,20,60,0.4)' },
+    supports:           { bg:'rgba(0,200,160,0.12)',   color:'#00c8a0', border:'rgba(0,200,160,0.35)' },
+    partially_supports: { bg:'rgba(200,168,0,0.12)',   color:'#c8a800', border:'rgba(200,168,0,0.35)' },
+    depends_on:         { bg:'rgba(153,51,255,0.12)',  color:'#9933ff', border:'rgba(153,51,255,0.35)' },
+    amplifies:          { bg:'rgba(232,114,58,0.12)',  color:'#e8723a', border:'rgba(232,114,58,0.35)' },
+    enables:            { bg:'rgba(0,200,160,0.12)',   color:'#00c8a0', border:'rgba(0,200,160,0.35)' },
+    influences:         { bg:'rgba(136,150,184,0.12)', color:'#8896b8', border:'rgba(136,150,184,0.35)' },
+    requires:           { bg:'rgba(136,150,184,0.12)', color:'#8896b8', border:'rgba(136,150,184,0.35)' },
+    triggers:           { bg:'rgba(232,80,144,0.12)',  color:'#e85090', border:'rgba(232,80,144,0.35)' },
+  };
+
+  function openInspector(link) {
+    const s = typeof link.source==='object' ? link.source.name : link.source;
+    const t = typeof link.target==='object' ? link.target.name : link.target;
+    document.getElementById('insp-title').textContent = `${s}  →  ${t}`;
+
+    const rt = link.relation_type || link.type || '—';
+    const badge = document.getElementById('insp-badge');
+    badge.textContent = rt;
+    const bc = BADGE_COLORS[rt] || { bg:'rgba(168,180,208,0.12)', color:'#a8b4d0', border:'rgba(168,180,208,0.35)' };
+    badge.style.cssText = `background:${bc.bg};color:${bc.color};border:1px solid ${bc.border};display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;`;
+
+    document.getElementById('insp-weight').textContent = link.weight != null ? link.weight : '—';
+    document.getElementById('weight-fill').style.width = link.weight != null ? (link.weight*100)+'%' : '0%';
+    document.getElementById('insp-rid').textContent   = link.relation_id || '—';
+    document.getElementById('insp-vfrom').textContent = link.valid_from ? link.valid_from.slice(0,10) : '—';
+    document.getElementById('insp-vto').textContent   = link.valid_to   ? link.valid_to.slice(0,10)   : 'present';
+
+    const mechRow = document.getElementById('insp-mech-row');
+    const justRow = document.getElementById('insp-just-row');
+    if (link.mechanism)    { document.getElementById('insp-mechanism').textContent = link.mechanism; mechRow.style.display='flex'; } else mechRow.style.display='none';
+    if (link.justification){ document.getElementById('insp-justification').textContent = link.justification; justRow.style.display='flex'; } else justRow.style.display='none';
+
+    document.getElementById('edge-inspector').classList.add('visible');
+  }
+  function closeInspector() { document.getElementById('edge-inspector').classList.remove('visible'); }
+
+  // ── Search ────────────────────────────────────────────────
+  function handleSearch(query) {
+    const container = document.getElementById('search-results');
+    container.innerHTML = '';
+    if (!query.trim() || !allNodes.length) return;
+    const q = query.toLowerCase();
+    allNodes.filter(n => (n.name||'').toLowerCase().includes(q)).slice(0,8).forEach(node => {
+      const item = document.createElement('div');
+      item.className = 'search-result-item';
+      const dot = document.createElement('div');
+      dot.className = 'search-dot';
+      dot.style.background = TYPE_COLORS[node.node_type] || '#556080';
+      if (node.is_version) dot.style.opacity = '0.5';
+      const lbl = document.createElement('span');
+      lbl.textContent = node.name || node.id;
+      item.appendChild(dot); item.appendChild(lbl);
+      item.onclick = () => focusNode(node);
+      container.appendChild(item);
+    });
+  }
+
+  function focusNode(node) {
+    if (!Graph) return;
+    const live = Graph.graphData().nodes.find(n => n.id === node.id);
+    if (!live) return;
+    const d = 80, r = 1 + d/Math.hypot(live.x||1,live.y||1,live.z||1);
+    Graph.cameraPosition({ x:live.x*r, y:live.y*r, z:live.z*r }, live, 1000);
+    document.getElementById('search-input').value = '';
+    document.getElementById('search-results').innerHTML = '';
+  }
+
+  // ── Controls ──────────────────────────────────────────────
+  function updateLinkDist(val) {
+    document.getElementById('dist-val').textContent = val;
+    if (Graph) { Graph.d3Force('link').distance(+val); Graph.d3ReheatSimulation(); }
+  }
+  function updateCharge(val) {
+    document.getElementById('charge-val').textContent = val;
+    if (Graph) { Graph.d3Force('charge').strength(+val); Graph.d3ReheatSimulation(); }
+  }
+
+  // ── Load ──────────────────────────────────────────────────
+  async function loadGraph() {
+    const url = document.getElementById('api-input').value.trim();
+    setStatus('', 'loading…');
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.nodes || !data.links) throw new Error('Response missing "nodes" or "links"');
+      initGraph(data);
+      setStatus('live', `${data.nodes.length} nodes loaded`);
+    } catch(err) {
+      setStatus('error', 'failed');
+      showError(`Could not load graph: ${err.message}`);
+    }
+  }
+
+  loadGraph();
+</script>
+<!-- Link Creation Modal -->
+<div id="link-modal" class="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+  <div class="panel-card" style="width:420px; max-width:90vw; padding:24px;">
+    <h2 style="color:#fff; margin-bottom:16px; font-family:'Syne',sans-serif;">Create Relation</h2>
+    
+    <div style="margin-bottom:16px;">
+      <label style="display:block; margin-bottom:6px; color:var(--muted);">From → To</label>
+      <div id="link-nodes-preview" style="padding:8px; background:var(--surface); border-radius:6px; color:#fff;">
+        <span id="source-name"></span> → <span id="target-name"></span>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; margin-bottom:6px; color:var(--muted);">Relation Type *</label>
+      <select id="rel-type-select" style="width:100%; padding:10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px;">
+        <option value="">Select type...</option>
+        <option value="SUPPORTS">SUPPORTS</option>
+        <option value="CONTRADICTS">CONTRADICTS</option>
+        <option value="PARTIALLY_SUPPORTS">PARTIALLY_SUPPORTS</option>
+        <option value="DEPENDS_ON">DEPENDS_ON</option>
+        <option value="ENABLES">ENABLES</option>
+        <option value="AMPLIFIES">AMPLIFIES</option>
+        <option value="INFLUENCES">INFLUENCES</option>
+        <option value="REQUIRES">REQUIRES</option>
+        <option value="TRIGGERS">TRIGGERS</option>
+        <!-- Add more allowed types here – only these will be accepted by DB -->
+      </select>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; margin-bottom:6px; color:var(--muted);">Color (auto-suggested based on type)</label>
+      <select id="color-select" style="width:100%; padding:10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px;">
+        <option value="#00c8a0">Supports / Enables – #00c8a0 (Teal)</option>
+        <option value="#dc143c">Contradicts – #dc143c (Crimson)</option>
+        <option value="#c8a800">Partially Supports – #c8a800 (Gold)</option>
+        <option value="#9933ff">Depends On / Requires – #9933ff (Purple)</option>
+        <option value="#e8723a">Amplifies – #e8723a (Orange)</option>
+        <option value="#8896b8">Influences – #8896b8 (Slate)</option>
+        <option value="#e85090">Triggers – #e85090 (Rose)</option>
+        <option value="#00c8a0">Custom / Other – #00c8a0 (Teal)</option>
+      </select>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; margin-bottom:6px; color:var(--muted);">Justification / Why</label>
+      <textarea id="justification" rows="3" placeholder="Explain the reasoning..." style="width:100%; padding:10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px; resize:vertical;"></textarea>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:block; margin-bottom:6px; color:var(--muted);">Mechanism (optional)</label>
+      <input id="mechanism" type="text" placeholder="e.g. logical entailment, empirical correlation..." style="width:100%; padding:10px; background:var(--bg); border:1px solid var(--border); color:var(--text); border-radius:6px;">
+    </div>
+
+    <div style="display:flex; gap:12px; justify-content:flex-end;">
+      <button id="link-cancel" style="padding:10px 18px; background:var(--surface); border:1px solid var(--border); color:var(--text); border-radius:6px; cursor:pointer;">Cancel</button>
+      <button id="link-submit" style="padding:10px 18px; background:var(--concept); color:#000; border:none; border-radius:6px; font-weight:600; cursor:pointer;">Create Relation</button>
+    </div>
+  </div>
+</div>
+
+<div id="node-inspector">
+  <div class="insp-header">
+    <div class="insp-header-left">
+      <span class="insp-key">Node Focus</span>
+      <span class="insp-title" id="node-insp-name">—</span>
+    </div>
+    <button class="insp-close" onclick="closeNodeInspector()">✕</button>
+  </div>
+  <div id="neighbor-list">
+    </div>
+</div>
+
+</body>
+</html>
