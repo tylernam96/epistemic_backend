@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;700;800&display=swap">
     <link rel="stylesheet" href="/static/styles.css">
     
-    <script src="//unpkg.com/three"></script>
+    
     <script src="//unpkg.com/three@0.128.0/build/three.min.js"></script>
     <script src="//unpkg.com/3d-force-graph"></script>
 </head>
@@ -29,16 +29,22 @@
             </div>
         </div>
 
-        <div id="top-right-group">
-            <div id="search-container" class="panel-glass">
-                <input type="text" id="node-search" placeholder="Search concepts..." autocomplete="off">
-                <div id="search-results"></div>
-            </div>
-            
-            <button id="btn-link-mode" class="panel-glass action-btn" onclick="window.toggleLinkMode()">
-                🔗 Toggle Link Mode
-            </button>
-        </div>
+<div id="top-right-group">
+
+    <div id="graph-actions">
+        <button id="btn-add-node" class="panel-glass action-btn" onclick="window.dispatch('ADD_NODE')">
+            ＋ Add Node
+        </button>
+        <button id="btn-link-mode" class="panel-glass action-btn" onclick="window.toggleLinkMode()">
+            🔗 Add Relation
+        </button>
+    </div>
+</div>
+
+    <div id="search-container" class="panel-glass">
+        <input type="text" id="node-search" placeholder="Search concepts..." autocomplete="off">
+        <div id="search-results"></div>
+    </div>
 
         <div id="link-mode-indicator">
             LINK MODE ACTIVE: SELECT SOURCE NODE

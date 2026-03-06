@@ -4,6 +4,7 @@ import { UI } from './ui-components.js';
 const state = {
     selectedNode: null,
     isLinkMode: false,
+    linkSource: null,
     graphData: null
 };
 
@@ -36,31 +37,50 @@ function flyToNode(node, duration = 2000) {
 // Node Click
 // -------------------------
 async function handleNodeClick(node) {
-    // Find the real node with x/y/z coords — try id, node_id, and code
-    const fullNode = (state.graphData?.nodes || []).find(n => 
+    const fullNode = (state.graphData?.nodes || []).find(n =>
         n.id === node.id || n.node_id === node.node_id || n.node_id === node.code
     ) || node;
+
+    // --- LINK MODE: two-click selection ---
+    if (state.isLinkMode) {
+        if (!state.linkSource) {
+            state.linkSource = fullNode;
+            UI.setLinkModeStatus(`SOURCE: "${fullNode.content || fullNode.name}" — now click target node`);
+            flyToNode(fullNode);
+        } else {
+            const source = state.linkSource;
+            state.linkSource = null;
+            state.isLinkMode = false;
+            UI.setLinkModeStatus(null);
+            document.getElementById('link-mode-indicator').style.display = 'none';
+            document.getElementById('btn-link-mode').classList.remove('active');
+            UI.renderRelationModal(source, fullNode, async (payload) => {
+                await fetch('/api/links', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                refreshGraph();
+            });
+        }
+        return;
+    }
+
     state.selectedNode = fullNode;
-
-    console.log('flying to node:', fullNode);
-
-    // Fly camera to the node
     flyToNode(fullNode);
 
-    // Fetch neighbors — use whatever id field is available
     const fetchId = fullNode.id || fullNode.node_id || fullNode.code;
     const response = await fetch(`/graph/node/${fetchId}/neighbors`);
     const neighbors = await response.json();
 
     UI.renderNodeInspector(fullNode, neighbors, (neighborStub) => {
-        const fullNeighbor = (state.graphData?.nodes || []).find(n => 
+        const fullNeighbor = (state.graphData?.nodes || []).find(n =>
             n.node_id === neighborStub.code
         ) || neighborStub;
         handleNodeClick(fullNeighbor);
     });
 }
 
-// Optional: link click handler
 function handleLinkClick(link) {
     console.log("Link clicked:", link);
 }
@@ -72,15 +92,11 @@ async function refreshGraph() {
     const res = await fetch('/graph/3d-json');
     const data = await res.json();
 
-    // Store in state so handleNodeClick can resolve coords
     state.graphData = data;
-
     Graph.graphData(data);
 
-    // Initialize legends
     UI.initLegends();
 
-    // Search functionality
     UI.setupSearch(data.nodes, (nodeId) => {
         const node = data.nodes.find(n => n.id === nodeId);
         if (!node) return;
@@ -88,28 +104,58 @@ async function refreshGraph() {
     });
 
     // -------------------------
-    // Time Slider
+    // Epoch Slider
     // -------------------------
     const slider = document.getElementById('time-slider');
+    const timeLabel = document.getElementById('current-time');
 
     if (slider) {
+        // Find the max epoch across all nodes and links
+        const allEpochs = [
+            ...data.nodes.map(n => n.valid_from).filter(v => v != null),
+            ...data.links.map(l => l.valid_from).filter(v => v != null),
+        ];
+        const maxEpoch = allEpochs.length > 0 ? Math.max(...allEpochs) : 1;
+
+        // Set slider range to match actual epoch range
+        slider.min = 1;
+        slider.max = maxEpoch;
+        slider.value = maxEpoch;
+        timeLabel.innerText = `Epoch ${maxEpoch}`;
+
         slider.oninput = (e) => {
-            const val = e.target.value;
+            const epoch = parseInt(e.target.value);
+            timeLabel.innerText = `Epoch ${epoch}`;
 
-            document.getElementById('current-time').innerText =
-                `T-${100 - val}%`;
+            const filteredNodes = data.nodes.filter(n =>
+                n.valid_from == null || n.valid_from <= epoch
+            );
+            const filteredLinks = data.links.filter(l =>
+                l.valid_from == null || l.valid_from <= epoch
+            );
 
-            const threshold = (val / 100) * data.links.length;
-
-            const filteredLinks = data.links.slice(0, Math.floor(threshold));
-
-            Graph.graphData({
-                nodes: data.nodes,
-                links: filteredLinks
-            });
+            Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
         };
     }
 }
+
+// -------------------------
+// Toggle Link Mode
+// -------------------------
+window.toggleLinkMode = () => {
+    state.isLinkMode = !state.isLinkMode;
+    state.linkSource = null;
+    const indicator = document.getElementById('link-mode-indicator');
+    const btn = document.getElementById('btn-link-mode');
+    if (state.isLinkMode) {
+        indicator.style.display = 'block';
+        indicator.innerText = 'LINK MODE: SELECT SOURCE NODE';
+        btn.classList.add('active');
+    } else {
+        indicator.style.display = 'none';
+        btn.classList.remove('active');
+    }
+};
 
 // -------------------------
 // Global Dispatcher
@@ -117,19 +163,26 @@ async function refreshGraph() {
 window.dispatch = async (action, payload) => {
 
     if (action === 'DELETE_NODE') {
-        await fetch(`/api/nodes/${payload}`, {
-            method: 'DELETE'
-        });
-
+        await fetch(`/api/nodes/${payload}`, { method: 'DELETE' });
         document.getElementById('node-inspector').style.display = 'none';
-
         refreshGraph();
+    }
+
+    if (action === 'ADD_NODE') {
+        UI.renderAddNodeModal(async (data) => {
+            const res = await fetch('/api/nodes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await res.json();
+            refreshGraph();
+            return result;
+        });
     }
 
     if (action === 'AI_CHALLENGE') {
         alert("Sending to LLM...");
-        // Example future call
-        // await fetch('/engine/ai/challenge', {method:'POST'})
     }
 };
 

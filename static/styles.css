@@ -116,7 +116,7 @@ body {
 
 #search-container {
     position: fixed;
-    top: 20px;
+    top: 70px;
     right: 20px;
     width: 250px;
 }
@@ -167,11 +167,327 @@ body {
 }
 
 /* ------------------ */
-/* UI Transitions */
+/* Action Buttons     */
 /* ------------------ */
 
-.search-item,
-.neighbor-card,
-.panel-glass {
+#graph-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    justify-content: flex-end;
+}
+
+.action-btn {
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 14px;
+    background: rgba(10,12,18,0.85);
+    backdrop-filter: blur(12px);
     transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.action-btn:hover {
+    color: var(--concept);
+    border-color: var(--concept);
+}
+
+.action-btn.active {
+    color: #e85090;
+    border-color: #e85090;
+    background: rgba(232, 80, 144, 0.08);
+}
+
+#top-right-group {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10;
+}
+
+/* ------------------ */
+/* Link Mode Indicator */
+/* ------------------ */
+
+#link-mode-indicator {
+    display: none;
+    position: fixed;
+    bottom: 90px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(232, 80, 144, 0.15);
+    border: 1px solid #e85090;
+    border-radius: 6px;
+    color: #e85090;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    padding: 10px 20px;
+    z-index: 200;
+    pointer-events: none;
+}
+
+/* ------------------ */
+/* Creation Modals    */
+/* ------------------ */
+
+.creation-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(6px);
+}
+
+.creation-modal {
+    background: #080a10;
+    border: 1px solid #1e2535;
+    border-radius: 14px;
+    width: 420px;
+    max-width: 95vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    font-family: 'DM Mono', monospace;
+    box-shadow: 0 0 60px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.03);
+}
+
+.creation-modal--wide {
+    width: 560px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid #161b29;
+}
+
+.modal-tag {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    color: var(--concept);
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: #445070;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.15s;
+}
+
+.modal-close:hover {
+    color: white;
+}
+
+.relation-nodes-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 22px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid #161b29;
+    overflow: hidden;
+}
+
+.rel-node-chip {
+    flex: 1;
+    background: rgba(0,200,160,0.07);
+    border: 1px solid rgba(0,200,160,0.2);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 11px;
+    color: var(--concept);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.rel-arrow {
+    color: #445070;
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.modal-body {
+    padding: 18px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+}
+
+.field-row {
+    display: flex;
+    gap: 14px;
+}
+
+.field-group label {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: #445070;
+    text-transform: uppercase;
+}
+
+.req { color: #e85090; }
+.opt { color: #2a3048; text-transform: none; letter-spacing: 0; font-size: 10px; }
+
+.field-group input,
+.field-group textarea,
+.field-group select {
+    background: #0c0e16;
+    border: 1px solid #1e2535;
+    border-radius: 6px;
+    color: #c8d0e0;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    padding: 9px 12px;
+    outline: none;
+    transition: border-color 0.15s;
+    resize: none;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.field-group input:focus,
+.field-group textarea:focus,
+.field-group select:focus {
+    border-color: var(--concept);
+}
+
+.field-group select {
+    appearance: none;
+    cursor: pointer;
+}
+
+.slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.slider-row input[type=range] {
+    flex: 1;
+    padding: 0;
+    border: none;
+    background: none;
+    accent-color: var(--concept);
+    cursor: pointer;
+}
+
+.slider-row span {
+    font-size: 11px;
+    color: var(--concept);
+    width: 30px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.modal-error {
+    font-size: 11px;
+    color: #ff5a5a;
+    padding: 8px 12px;
+    background: rgba(255,90,90,0.07);
+    border: 1px solid rgba(255,90,90,0.2);
+    border-radius: 6px;
+}
+
+.modal-footer {
+    display: flex;
+    gap: 10px;
+    padding: 14px 22px 20px;
+    border-top: 1px solid #161b29;
+}
+
+.modal-btn-cancel {
+    flex: 1;
+    padding: 10px;
+    border-radius: 7px;
+    background: transparent;
+    border: 1px solid #1e2535;
+    color: #445070;
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    transition: all 0.15s;
+}
+
+.modal-btn-cancel:hover {
+    border-color: #445070;
+    color: #8e99b3;
+}
+
+.modal-btn-confirm {
+    flex: 2;
+    padding: 10px;
+    border-radius: 7px;
+    background: rgba(0,200,160,0.08);
+    border: 1px solid var(--concept);
+    color: var(--concept);
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    transition: all 0.15s;
+}
+
+.modal-btn-confirm:hover {
+    background: rgba(0,200,160,0.15);
+}
+
+.modal-btn-confirm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ------------------ */
+/* Success Flash      */
+/* ------------------ */
+
+.success-flash {
+    position: fixed;
+    bottom: 140px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,200,160,0.12);
+    border: 1px solid var(--concept);
+    color: var(--concept);
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    padding: 10px 20px;
+    border-radius: 6px;
+    z-index: 9999;
+    animation: flashIn 0.2s ease, flashOut 0.4s ease 2.1s forwards;
+    pointer-events: none;
+}
+
+@keyframes flashIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes flashOut {
+    from { opacity: 1; }
+    to   { opacity: 0; }
 }
