@@ -26,31 +26,23 @@ body {
     top: 20px;
     right: 20px;
     width: 320px;
-
     background: rgba(10, 12, 18, 0.9);
     backdrop-filter: blur(10px);
-
     border: 1px solid var(--border);
     padding: 20px;
-
     display: none;
-
     max-height: 90vh;
     overflow-y: auto;
-
     z-index: 100;
 }
 
 .panel-glass {
     background: rgba(10, 12, 18, 0.85);
     backdrop-filter: blur(12px);
-
     border: 1px solid var(--border);
     border-radius: 8px;
-
     padding: 12px;
     color: var(--text);
-
     z-index: 10;
 }
 
@@ -61,12 +53,10 @@ body {
 .neighbor-card {
     background: rgba(255,255,255,0.03);
     border: 1px solid var(--border);
-
     border-radius: 8px;
     padding: 12px;
     margin-bottom: 12px;
-    color: white;  /* 👈 add this */
-
+    color: white;
 }
 
 /* ------------------ */
@@ -76,11 +66,9 @@ body {
 #tooltip {
     position: absolute;
     pointer-events: none;
-
     padding: 8px;
     background: rgba(0,0,0,0.8);
     color: white;
-
     border-radius: 4px;
     z-index: 1000;
 }
@@ -111,6 +99,17 @@ body {
 }
 
 /* ------------------ */
+/* Top Right Group    */
+/* ------------------ */
+
+#top-right-group {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10;
+}
+
+/* ------------------ */
 /* Search */
 /* ------------------ */
 
@@ -125,11 +124,10 @@ body {
     width: 100%;
     background: var(--bg);
     border: 1px solid var(--border);
-
     color: white;
-
     padding: 8px;
     border-radius: 4px;
+    box-sizing: border-box;
 }
 
 #search-results {
@@ -141,7 +139,6 @@ body {
 .search-item {
     padding: 8px;
     cursor: pointer;
-
     border-bottom: 1px solid var(--border);
     font-size: 12px;
 }
@@ -159,9 +156,7 @@ body {
     position: fixed;
     bottom: 30px;
     left: 50%;
-
     transform: translateX(-50%);
-
     width: 350px;
     text-align: center;
 }
@@ -173,8 +168,7 @@ body {
 #graph-actions {
     display: flex;
     gap: 8px;
-    margin-top: 8px;
-    justify-content: flex-end;
+    align-items: center;
 }
 
 .action-btn {
@@ -203,11 +197,16 @@ body {
     background: rgba(232, 80, 144, 0.08);
 }
 
-#top-right-group {
-    position: fixed;
-    top: 20px;
-    right: 20px;
-    z-index: 10;
+.action-btn--save {
+    color: #ffa500;
+    border-color: #ffa500;
+    background: rgba(255, 165, 0, 0.08);
+}
+
+.action-btn--save:hover {
+    background: rgba(255, 165, 0, 0.15);
+    color: #ffa500;
+    border-color: #ffa500;
 }
 
 /* ------------------ */
@@ -339,6 +338,16 @@ body {
 .field-row {
     display: flex;
     gap: 14px;
+}
+
+.field-section-label {
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--concept);
+    text-transform: uppercase;
+    padding-top: 4px;
+    border-top: 1px solid #161b29;
+    margin-top: 2px;
 }
 
 .field-group label {
@@ -490,4 +499,127 @@ body {
 @keyframes flashOut {
     from { opacity: 1; }
     to   { opacity: 0; }
+}
+
+/* ------------------ */
+/* Node Inspector     */
+/* ------------------ */
+
+#node-inspector {
+    top: 160px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+}
+
+.insp-header {
+    margin-bottom: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.code-badge {
+    display: inline-block;
+    margin-top: 6px;
+    font-size: 10px;
+    font-family: 'DM Mono', monospace;
+    color: var(--concept);
+    background: rgba(0,200,160,0.07);
+    border: 1px solid rgba(0,200,160,0.2);
+    border-radius: 4px;
+    padding: 2px 8px;
+    letter-spacing: 0.05em;
+}
+
+.neighbor-list {
+    max-height: 340px;
+    overflow-y: auto;
+    margin-bottom: 4px;
+}
+
+.ai-btn {
+    flex: 1;
+    padding: 9px;
+    border-radius: 6px;
+    background: rgba(232,80,144,0.07);
+    border: 1px solid rgba(232,80,144,0.35);
+    color: #e85090;
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+}
+
+.ai-btn:hover {
+    background: rgba(232,80,144,0.14);
+}
+
+.delete-btn {
+    flex: 1;
+    padding: 9px;
+    border-radius: 6px;
+    background: rgba(255,90,90,0.05);
+    border: 1px solid rgba(255,90,90,0.25);
+    color: rgba(255,90,90,0.6);
+    cursor: pointer;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    transition: all 0.15s;
+}
+
+.delete-btn:hover {
+    background: rgba(255,90,90,0.12);
+    color: #ff5a5a;
+    border-color: #ff5a5a;
+}
+
+/* Legend headings */
+#legend h4 {
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: #445070;
+    margin: 0 0 8px 0;
+    font-family: 'DM Mono', monospace;
+}
+
+
+.search-item,
+.neighbor-card,
+.panel-glass {
+    transition: all 0.15s ease;
+}
+/* ------------------ */
+/* Relation Inspector */
+/* ------------------ */
+
+#relation-inspector {
+    top: 20px;
+    right: 360px;
+    width: 280px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+}
+
+/* ------------------ */
+/* Map Extractor       */
+/* ------------------ */
+
+.frag-card {
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.frag-card:hover {
+    background: rgba(255,255,255,0.03) !important;
+}
+
+#aap-steps div {
+    padding: 4px 0;
+    border-bottom: 1px solid #0e1120;
+    font-size: 11px;
+    line-height: 1.6;
+}
+
+.creation-modal--wide {
+    max-height: 85vh;
 }

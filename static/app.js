@@ -1,18 +1,20 @@
-import { createGraph } from './graph-component.js';
+import { createGraph, randomOnSphere, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
 import { UI } from './ui-components.js';
 
 const state = {
     selectedNode: null,
     isLinkMode: false,
     linkSource: null,
-    graphData: null
+    graphData: null,
+    dirtyNodes: {}  // nodes moved by drag, pending save: { id: {x,y,z} }
 };
 
 // Initialize Graph
 const Graph = createGraph(
     '3d-graph',
     async (node) => handleNodeClick(node),
-    (link) => handleLinkClick(link)
+    (link) => handleLinkClick(link),
+    (node) => handleNodeDrag(node)
 );
 
 // -------------------------
@@ -21,16 +23,38 @@ const Graph = createGraph(
 function flyToNode(node, duration = 2000) {
     const distance = 60;
     const distRatio = 1 + distance / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
-
     Graph.cameraPosition(
-        {
-            x: node.x * distRatio,
-            y: node.y * distRatio,
-            z: node.z * distRatio
-        },
+        { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio },
         node,
         duration
     );
+}
+
+// -------------------------
+// Node Drag — with Epistemic Log
+// -------------------------
+function handleNodeDrag(node) {
+    state.dirtyNodes[node.id] = { x: node.x, y: node.y, z: node.z };
+
+    const btn = document.getElementById('btn-save-positions');
+    if (btn) {
+        btn.style.opacity = '1';
+        btn.style.pointerEvents = 'auto';
+        btn.textContent = `💾 Save Positions (${Object.keys(state.dirtyNodes).length})`;
+    }
+
+    // Clear any suggestion vectors when node is manually repositioned
+    clearSuggestionVectors(Graph.scene());
+
+    // Epistemic log prompt
+    UI.renderEpistemicLogPrompt(node, async (note) => {
+        if (!note) return;
+        await fetch(`/api/nodes/${node.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ placement_note: note }),
+        });
+    });
 }
 
 // -------------------------
@@ -82,7 +106,23 @@ async function handleNodeClick(node) {
 }
 
 function handleLinkClick(link) {
-    console.log("Link clicked:", link);
+    // Enrich with source/target node names from graphData
+    const nodes = state.graphData?.nodes || [];
+    const sourceNode = nodes.find(n => n.id === (link.source?.id ?? link.source));
+    const targetNode = nodes.find(n => n.id === (link.target?.id ?? link.target));
+    UI.renderRelationInspector(link, sourceNode, targetNode, async (relId) => {
+        await fetch(`/api/links/${relId}`, { method: 'DELETE' });
+        document.getElementById('relation-inspector')?.remove();
+        refreshGraph();
+        const flash = document.createElement('div');
+        flash.className = 'success-flash';
+        flash.textContent = 'Relation deleted';
+        flash.style.background = 'rgba(255,90,90,0.12)';
+        flash.style.borderColor = '#ff5a5a';
+        flash.style.color = '#ff5a5a';
+        document.body.appendChild(flash);
+        setTimeout(() => flash.remove(), 2500);
+    });
 }
 
 // -------------------------
@@ -92,9 +132,37 @@ async function refreshGraph() {
     const res = await fetch('/graph/3d-json');
     const data = await res.json();
 
-    state.graphData = data;
-    Graph.graphData(data);
+    // Assign coordinates: use saved x/y/z or scatter randomly on sphere
+    data.nodes.forEach(node => {
+        if (node.x != null && node.y != null && node.z != null) {
+            // Pin it so physics won't touch it (even though physics is off)
+            node.fx = node.x;
+            node.fy = node.y;
+            node.fz = node.z;
+        } else {
+            // No saved position — scatter on sphere edge
+            const pos = randomOnSphere(200);
+            node.x = pos.x;
+            node.y = pos.y;
+            node.z = pos.z;
+            node.fx = node.x;
+            node.fy = node.y;
+            node.fz = node.z;
+        }
+    });
 
+    state.graphData = data;
+    state.dirtyNodes = {};
+
+    // Reset save button
+    const btn = document.getElementById('btn-save-positions');
+    if (btn) {
+        btn.style.opacity = '0.4';
+        btn.style.pointerEvents = 'none';
+        btn.textContent = '💾 Save Positions';
+    }
+
+    Graph.graphData(data);
     UI.initLegends();
 
     UI.setupSearch(data.nodes, (nodeId) => {
@@ -110,14 +178,12 @@ async function refreshGraph() {
     const timeLabel = document.getElementById('current-time');
 
     if (slider) {
-        // Find the max epoch across all nodes and links
         const allEpochs = [
             ...data.nodes.map(n => n.valid_from).filter(v => v != null),
             ...data.links.map(l => l.valid_from).filter(v => v != null),
         ];
         const maxEpoch = allEpochs.length > 0 ? Math.max(...allEpochs) : 1;
 
-        // Set slider range to match actual epoch range
         slider.min = 1;
         slider.max = maxEpoch;
         slider.value = maxEpoch;
@@ -140,6 +206,38 @@ async function refreshGraph() {
 }
 
 // -------------------------
+// Save Positions
+// -------------------------
+async function savePositions() {
+    const dirty = state.dirtyNodes;
+    const ids = Object.keys(dirty);
+    if (ids.length === 0) return;
+
+    const btn = document.getElementById('btn-save-positions');
+    if (btn) btn.textContent = 'Saving...';
+
+    await Promise.all(ids.map(id =>
+        fetch(`/api/nodes/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                x: dirty[id].x,
+                y: dirty[id].y,
+                z: dirty[id].z
+            })
+        })
+    ));
+
+    state.dirtyNodes = {};
+    if (btn) {
+        btn.textContent = '✓ Saved';
+        btn.style.opacity = '0.4';
+        btn.style.pointerEvents = 'none';
+        setTimeout(() => { btn.textContent = '💾 Save Positions'; }, 2000);
+    }
+}
+
+// -------------------------
 // Toggle Link Mode
 // -------------------------
 window.toggleLinkMode = () => {
@@ -156,6 +254,8 @@ window.toggleLinkMode = () => {
         btn.classList.remove('active');
     }
 };
+
+window.savePositions = savePositions;
 
 // -------------------------
 // Global Dispatcher
@@ -182,7 +282,144 @@ window.dispatch = async (action, payload) => {
     }
 
     if (action === 'AI_CHALLENGE') {
-        alert("Sending to LLM...");
+        const node = (state.graphData?.nodes || []).find(n =>
+            n.id === payload || n.node_id === payload
+        );
+        if (node) {
+            UI.renderAIChallenge(node);
+        }
+    }
+
+    if (action === 'AI_ANALYZE') {
+        UI.renderAIAnalyzePanel(state.graphData?.nodes || [], async (selectedFragments, fullResult) => {
+            // selectedFragments: [{ key, content, parent_type, embedding, position, suggested_relations }]
+
+            const scene = Graph.scene();
+            const placedNodes = [];
+
+            for (const frag of selectedFragments) {
+                // Use embedding-derived position, or fall back to sphere scatter
+                const pos = frag.position && frag.position.x != null
+                    ? frag.position
+                    : randomOnSphere(200);
+
+                // Create node in Neo4j
+                const res = await fetch('/api/nodes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        content:     frag.content,
+                        parent_type: frag.parent_type || 'Concept',
+                        x: pos.x, y: pos.y, z: pos.z,
+                    }),
+                });
+                const newNode = await res.json();
+
+                // Store embedding vector on the node
+                if (frag.embedding && frag.embedding.length > 0) {
+                    await fetch(`/api/nodes/${newNode.id}/embedding`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ embedding: frag.embedding }),
+                    });
+                }
+
+                placedNodes.push({ frag, newNode, pos });
+            }
+
+            // Refresh graph to get all new nodes in state
+            await refreshGraph();
+
+            const allNodes = state.graphData?.nodes || [];
+
+            // Draw suggestion vectors for all placed nodes
+            const allVectorTargets = [];
+            for (const { frag, newNode } of placedNodes) {
+                const ghostNode = allNodes.find(n => n.node_id === newNode.node_id)
+                    || { x: 0, y: 0, z: 0, node_id: newNode.node_id, content: frag.content };
+
+                for (const sr of (frag.suggested_relations || [])) {
+                    const target = allNodes.find(n => n.node_id === sr.node_id);
+                    if (target) {
+                        allVectorTargets.push({
+                            from: ghostNode,
+                            node: target,
+                            color: sr.rel_type === 'CONTRADICTS' ? '#ff5a5a' : '#00c8a0',
+                            label: sr.rel_type,
+                        });
+                    }
+                }
+            }
+
+            // Group by fromNode and draw
+            if (allVectorTargets.length > 0) {
+                clearSuggestionVectors(scene);
+                // Draw all as a flat list from first ghost node (multi-source vectors)
+                allVectorTargets.forEach(({ from, node, color, label }) => {
+                    drawSuggestionVectors(scene, from, [{ node, color, label }]);
+                });
+            }
+
+            // Build combined suggestion result for the panel
+            const combinedRelations = [];
+            for (const { frag, newNode } of placedNodes) {
+                const ghostNode = allNodes.find(n => n.node_id === newNode.node_id) || newNode;
+                for (const sr of (frag.suggested_relations || [])) {
+                    const target = allNodes.find(n => n.node_id === sr.node_id);
+                    if (target) {
+                        combinedRelations.push({
+                            ...sr,
+                            target_id: target.id,
+                            target_name: target.content || target.name,
+                            source_node: ghostNode,
+                            source_content: frag.content,
+                        });
+                    }
+                }
+            }
+
+            UI.renderAISuggestionPanel(
+                // Pass first placed node as "anchor" for display
+                allNodes.find(n => n.node_id === placedNodes[0]?.newNode?.node_id) || placedNodes[0]?.newNode || {},
+                {
+                    ...fullResult,
+                    suggested_relations: combinedRelations,
+                    _placedNodes: placedNodes.map(p => ({
+                        node_id: p.newNode.node_id,
+                        id: p.newNode.id,
+                        content: p.frag.content,
+                    })),
+                },
+                allNodes,
+                async (accepted) => {
+                    clearSuggestionVectors(Graph.scene());
+                    if (accepted.length > 0) {
+                        await Promise.all(accepted.map(sr =>
+                            fetch('/api/links', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    node_a: sr.source_node?.id || placedNodes[0]?.newNode?.id,
+                                    node_b: sr.target_id,
+                                    rel_type: sr.rel_type,
+                                    justification: sr.justification,
+                                    weight: 0.8, confidence: 0.75, status: 'PROVISIONAL',
+                                }),
+                            })
+                        ));
+                    }
+                    refreshGraph();
+                }
+            );
+        });
+    }
+
+    if (action === 'SETTINGS') {
+        UI.renderSettingsPanel(() => refreshGraph());
+    }
+
+    if (action === 'REFRESH') {
+        refreshGraph();
     }
 };
 
