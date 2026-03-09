@@ -253,6 +253,45 @@ def ai_challenge_node(node_id: str):
     return {"suggestions": ["Contradicts C14", "Supports Hypothesis A"]}
 
 
+class ChallengeRequest(BaseModel):
+    content: str
+    parent_type: Optional[str] = None
+
+@app.post("/api/ai/challenge")
+def ai_challenge(data: ChallengeRequest):
+    prompt = f"""You are an adversarial epistemic auditor in a knowledge graph tool. Stress-test the given concept with four sections:
+
+COUNTERARGUMENT
+The strongest challenge or alternative framing.
+
+HIDDEN ASSUMPTIONS
+Unstated premises this concept depends on.
+
+FALSIFICATION CONDITIONS
+What evidence would significantly weaken or refute this.
+
+EPISTEMIC RATING
+One of: WEAK / CONTESTED / SOLID / ROBUST — one-line justification.
+
+Be direct. No hedging. No markdown formatting.
+
+Concept: "{data.content}"
+Node type: {data.parent_type or 'Concept'}"""
+
+    try:
+        resp = _chat_model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.3},
+        )
+        if not resp.candidates or resp.candidates[0].finish_reason.name != "STOP":
+            raise HTTPException(status_code=500, detail="Gemini blocked or failed to respond")
+        return {"result": resp.text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- AI ANALYZE: Map Extractor + Embedding Placement ---
 
 import google.generativeai as _genai
@@ -340,39 +379,48 @@ def ai_analyze(data: AIAnalyzeRequest):
     # ---- 2. Call Claude as Map Extractor ----
     extraction_prompt = f"""You are a Map Extractor for a knowledge graph.
 
-Given the text below, extract:
-1. CORE CONCEPT — the primary, most atomic idea (1 sentence)
-2. SUPPORTING OBSERVATION — an empirical or contextual note that supports the concept (1 sentence; null if none)
-3. COUNTER-ARGUMENT — the strongest challenge or opposing framing (1 sentence; null if none)
+    Given the text below, extract:
+    1. CORE CONCEPT — the primary, most atomic idea (1 sentence)
+    2. SUPPORTING OBSERVATION — an empirical or contextual note that supports the concept (1 sentence; null if none)
+    3. COUNTER-ARGUMENT — the strongest challenge or opposing framing (1 sentence; null if none)
 
-Then, for EACH extracted item (that is not null), suggest up to 2 existing graph nodes it relates to.
+    Then for EACH extracted item, suggest up to 2 relations to existing graph nodes.
+    Also suggest relations BETWEEN the extracted fragments themselves.
 
-Existing graph nodes:
-{node_list_str}
+    Existing graph nodes:
+    {node_list_str}
 
-Respond ONLY with a JSON object matching this exact schema — no markdown, no preamble:
-{{
-  "core_concept": {{
-    "content": "...",
-    "parent_type": "Concept",
-    "suggested_relations": [
-      {{"node_id": "<exact node_id>", "rel_type": "SUPPORTS|CONTRADICTS|REQUIRES|TRIGGERS|AMPLIFIES|DEPENDS_ON|RELATES_TO", "justification": "one sentence"}}
+    Respond ONLY with a JSON object — no markdown, no preamble:
+    {{
+    "core_concept": {{
+        "content": "...",
+        "parent_type": "Concept",
+        "suggested_relations": [
+        {{"node_id": "<exact node_id from list>", "rel_type": "SUPPORTS|CONTRADICTS|REQUIRES|TRIGGERS|AMPLIFIES|DEPENDS_ON|RELATES_TO", "justification": "one sentence"}}
+        ]
+    }},
+    "observation": {{
+        "content": "..." | null,
+        "parent_type": "Observation",
+        "suggested_relations": []
+    }},
+    "counter_argument": {{
+        "content": "..." | null,
+        "parent_type": "Concept",
+        "suggested_relations": []
+    }},
+    "cross_relations": [
+        {{
+        "from_fragment": "core_concept|observation|counter_argument",
+        "to_fragment":   "core_concept|observation|counter_argument",
+        "rel_type": "SUPPORTS|CONTRADICTS|REQUIRES|TRIGGERS|AMPLIFIES|DEPENDS_ON|RELATES_TO",
+        "justification": "one sentence"
+        }}
     ]
-  }},
-  "observation": {{
-    "content": "..." | null,
-    "parent_type": "Observation",
-    "suggested_relations": []
-  }},
-  "counter_argument": {{
-    "content": "..." | null,
-    "parent_type": "Concept",
-    "suggested_relations": []
-  }}
-}}
+    }}
 
-Text to analyze:
-\"\"\"{text}\"\"\""""
+    Text to analyze:
+    \"\"\"{text}\"\"\""""
 
     resp = _chat_model.generate_content(
     extraction_prompt,

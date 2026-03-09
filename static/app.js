@@ -359,7 +359,18 @@ window.dispatch = async (action, payload) => {
                     drawSuggestionVectors(scene, from, [{ node, color, label }]);
                 });
             }
-
+            // Cross-relations between the newly placed nodes themselves
+            for (const cr of (fullResult.cross_relations || [])) {
+                const fromNode = allNodes.find(n => n.node_id === placedNodes.find(p => p.frag.key === cr.from_fragment)?.newNode?.node_id);
+                const toNode   = allNodes.find(n => n.node_id === placedNodes.find(p => p.frag.key === cr.to_fragment)?.newNode?.node_id);
+                if (fromNode && toNode) {
+                    drawSuggestionVectors(scene, fromNode, [{
+                        node:  toNode,
+                        color: cr.rel_type === 'CONTRADICTS' ? '#ff5a5a' : '#00c8a0',
+                        label: cr.rel_type,
+                    }]);
+                }
+            }
             // Build combined suggestion result for the panel
             const combinedRelations = [];
             for (const { frag, newNode } of placedNodes) {

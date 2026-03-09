@@ -630,39 +630,20 @@ export const UI = {
             rechallengeBtn.style.pointerEvents = 'none';
 
             try {
-                const response = await fetch('https://api.anthropic.com/v1/messages', {
+                const response = await fetch('/api/ai/challenge', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        model: 'claude-sonnet-4-20250514',
-                        max_tokens: 1000,
-                        system: `You are an adversarial epistemic auditor in a knowledge graph tool called Epistemic Engine. Stress-test the given concept with four sections:
-
-COUNTERARGUMENT
-The strongest challenge or alternative framing.
-
-HIDDEN ASSUMPTIONS
-Unstated premises this concept depends on.
-
-FALSIFICATION CONDITIONS
-What evidence would significantly weaken or refute this.
-
-EPISTEMIC RATING
-One of: WEAK / CONTESTED / SOLID / ROBUST — one-line justification.
-
-Be direct. No hedging. No markdown formatting.`,
-                        messages: [{
-                            role: 'user',
-                            content: `Challenge this concept:\n\n"${node.content || node.name}"\n\nNode type: ${node.parent_type || node.node_type || 'Concept'}`
-                        }]
-                    })
+                        content:     node.content || node.name,
+                        parent_type: node.parent_type || node.node_type || 'Concept',
+                    }),
                 });
 
+                if (!response.ok) throw new Error(`Server error ${response.status}`);
                 const data = await response.json();
-                if (data.error) throw new Error(data.error.message);
 
                 container.style.color = '#c8d0e0';
-                container.textContent = data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+                container.textContent = data.result;
 
                 const btn = document.getElementById('ai-rechallenge');
                 if (btn) { btn.style.opacity = '1'; btn.style.pointerEvents = 'auto'; }
@@ -672,6 +653,7 @@ Be direct. No hedging. No markdown formatting.`,
                 container.textContent = `Error: ${err.message}`;
             }
         };
+
 
         document.getElementById('ai-rechallenge').onclick = challenge;
         await challenge();
