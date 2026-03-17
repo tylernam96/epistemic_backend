@@ -161,6 +161,36 @@ body {
     text-align: center;
 }
 
+#level-filter-row {
+    margin-top: 8px;
+    display: flex;
+    justify-content: center;
+}
+
+.level-filter-btn {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: #445070;
+    background: transparent;
+    border: 1px solid #1e2535;
+    border-radius: 5px;
+    padding: 5px 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.level-filter-btn:hover {
+    color: var(--concept);
+    border-color: rgba(0,200,160,0.4);
+}
+
+.level-filter-btn.active {
+    color: var(--concept);
+    border-color: rgba(0,200,160,0.5);
+    background: rgba(0,200,160,0.06);
+}
+
 /* ------------------ */
 /* Action Buttons     */
 /* ------------------ */

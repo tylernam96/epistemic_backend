@@ -36,6 +36,8 @@ class NodeCreate(BaseModel):
     x: Optional[float] = None
     y: Optional[float] = None
     z: Optional[float] = None
+    abstraction_level: Optional[int] = None  # 1–5: 5=axiom, 3=hypothesis, 1=observation
+    confidence_tier: Optional[int] = None    # 0–3: 0=Speculative … 3=Confirmed
 
 class NodeUpdate(BaseModel):
     content: Optional[str] = None
@@ -43,6 +45,9 @@ class NodeUpdate(BaseModel):
     x: Optional[float] = None
     y: Optional[float] = None
     z: Optional[float] = None
+    abstraction_level: Optional[int] = None
+    confidence_tier: Optional[int] = None
+    placement_note: Optional[str] = None
 
 class LinkRequest(BaseModel):
     node_a: str
@@ -111,6 +116,8 @@ def create_node(data: NodeCreate):
         n.x = $x,
         n.y = $y,
         n.z = $z,
+        n.abstraction_level = $abstraction_level,
+        n.confidence_tier = $confidence_tier,
         n.embedding = [],
         n.created_at = datetime()
     RETURN elementId(n) AS id, n.node_id AS node_id
@@ -124,6 +131,8 @@ def create_node(data: NodeCreate):
         "x": data.x,
         "y": data.y,
         "z": data.z,
+        "abstraction_level": data.abstraction_level,
+        "confidence_tier": data.confidence_tier,
     }
     with driver.session() as session:
         result = session.run(query, params)
@@ -179,6 +188,9 @@ def update_node(node_id: str, data: NodeUpdate):
     RETURN n
     """
     props = {k: v for k, v in data.dict().items() if v is not None}
+    # z is derived from abstraction_level on the frontend — never persist it.
+    # Saving raw world-coordinate z values caused stale positions on reload.
+    props.pop("z", None)
     with driver.session() as session:
         session.run(query, {"node_id": node_id, "props": props})
     return {"status": "updated"}

@@ -9,7 +9,8 @@
     <link rel="stylesheet" href="/static/styles.css">
     
     <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/3d-force-graph"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3-force@3/dist/d3-force.min.js"></script>
 </head>
 <body>
 
@@ -39,6 +40,9 @@
                 <button class="panel-glass action-btn" onclick="window.dispatch('AI_ANALYZE')" style="color:#00c8a0;border-color:rgba(0,200,160,0.3);">
                     ✨ AI Analyze
                 </button>
+                <button class="panel-glass action-btn" onclick="window.dispatch('REFLOW')" title="Run force layout once then freeze" style="color:#8896b8;border-color:rgba(136,150,184,0.3);">
+                    ⬡ Reflow
+                </button>
                 <button id="btn-save-positions" class="panel-glass action-btn" onclick="window.savePositions()" style="opacity:0.4; pointer-events:none;">
                     💾 Save Positions
                 </button>
@@ -59,10 +63,15 @@
 
         <div id="time-controller" class="panel-glass">
             <div id="time-header">
-                <span>Epoch Filter</span>
-                <span id="current-time">All</span>
+                <span>Abstraction Level</span>
+                <span id="current-time">L1</span>
             </div>
-            <input type="range" id="time-slider" min="1" max="10" value="10">
+            <input type="range" id="time-slider" min="1" max="5" value="1">
+            <div id="level-filter-row">
+                <button id="btn-show-all-levels" class="level-filter-btn" title="Show all levels up to selected">
+                    Show only L<span id="level-btn-label">1</span>
+                </button>
+            </div>
         </div>
 
         <div id="node-inspector" class="panel"></div>

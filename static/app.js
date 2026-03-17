@@ -1,4 +1,4 @@
-import { createGraph, randomOnSphere, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
+import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
 import { UI } from './ui-components.js';
 
 const state = {
@@ -16,6 +16,7 @@ const Graph = createGraph(
     (link) => handleLinkClick(link),
     (node) => handleNodeDrag(node)
 );
+window.__graph = Graph; // debug access
 
 // -------------------------
 // Fly To Node
@@ -34,6 +35,11 @@ function flyToNode(node, duration = 2000) {
 // Node Drag — with Epistemic Log
 // -------------------------
 function handleNodeDrag(node) {
+    // Pin the node at its dropped position so it doesn't drift further.
+    // The simulation is still alive — unpinned nodes continue to settle
+    // around this newly fixed point. User can unpin everything via Reflow.
+    Graph.pinNode(node.id);
+
     state.dirtyNodes[node.id] = { x: node.x, y: node.y, z: node.z };
 
     const btn = document.getElementById('btn-save-positions');
@@ -132,22 +138,29 @@ async function refreshGraph() {
     const res = await fetch('/graph/3d-json');
     const data = await res.json();
 
-    // Assign coordinates: use saved x/y/z or scatter randomly on sphere
+    // Assign Z for HAS_VERSION chains first
+    assignVersionZ(data.nodes, data.links);
+
     data.nodes.forEach(node => {
-        if (node.x != null && node.y != null && node.z != null) {
-            // Pin it so physics won't touch it (even though physics is off)
+        // Z rule (priority order):
+        //   1. HAS_VERSION chain depth  (set by assignVersionZ as node.version_z)
+        //   2. Abstraction level        (L1=-120 … L5=+120, step 60)
+        //   3. Zero                     (fallback)
+        // Saved DB z values are intentionally ignored — abstraction level is the source of truth.
+        const lvl = node.abstraction_level != null ? parseInt(node.abstraction_level) : null;
+        node.z = zFromAbstractionLevel(lvl) ?? node.version_z ?? 0;
+
+
+        if (node.x != null && node.y != null) {
             node.fx = node.x;
             node.fy = node.y;
-            node.fz = node.z;
         } else {
-            // No saved position — scatter on sphere edge
-            const pos = randomOnSphere(200);
-            node.x = pos.x;
-            node.y = pos.y;
-            node.z = pos.z;
+            const angle = Math.random() * 2 * Math.PI;
+            const r     = 80 + Math.random() * 120;
+            node.x  = r * Math.cos(angle);
+            node.y  = r * Math.sin(angle);
             node.fx = node.x;
             node.fy = node.y;
-            node.fz = node.z;
         }
     });
 
@@ -162,7 +175,6 @@ async function refreshGraph() {
         btn.textContent = '💾 Save Positions';
     }
 
-    Graph.graphData(data);
     UI.initLegends();
 
     UI.setupSearch(data.nodes, (nodeId) => {
@@ -172,36 +184,82 @@ async function refreshGraph() {
     });
 
     // -------------------------
-    // Epoch Slider
+    // Abstraction Level Filter
     // -------------------------
     const slider = document.getElementById('time-slider');
     const timeLabel = document.getElementById('current-time');
+    const btnShowAll = document.getElementById('btn-show-all-levels');
+    const levelBtnLabel = document.getElementById('level-btn-label');
 
-    if (slider) {
-        const allEpochs = [
-            ...data.nodes.map(n => n.valid_from).filter(v => v != null),
-            ...data.links.map(l => l.valid_from).filter(v => v != null),
-        ];
-        const maxEpoch = allEpochs.length > 0 ? Math.max(...allEpochs) : 1;
+    if (slider && btnShowAll) {
+        // Preserve slider position and toggle state across refreshGraph calls
+        if (!slider._levelFilterInit) {
+            slider.value = 1;
+            slider._levelFilterInit = true;
+            slider._showAllUpTo = false;
+        }
+
+        let showAllUpTo = slider._showAllUpTo ?? false;
+        let currentLevel = parseInt(slider.value) || 1;
+
+        function applyLevelFilter() {
+            // Persist toggle state on the DOM element so it survives refreshGraph
+            slider._showAllUpTo = showAllUpTo;
+
+            timeLabel.innerText = `L${currentLevel}`;
+            if (levelBtnLabel) levelBtnLabel.textContent = currentLevel;
+            btnShowAll.textContent = showAllUpTo
+                ? `Show only L${currentLevel}`
+                : `Show all ≤ L${currentLevel}`;
+            btnShowAll.classList.toggle('active', showAllUpTo);
+
+            const filteredNodes = data.nodes.filter(n => {
+                if (n.abstraction_level == null) return true; // always show unlevelled nodes
+                const lvl = parseInt(n.abstraction_level);
+                if (showAllUpTo) return lvl <= currentLevel;
+                return lvl === currentLevel;
+            });
+
+            // Re-apply Z before rendering — graphData() rebuilds the scene from scratch
+            // and needs correct z values on every node in the filtered set.
+            filteredNodes.forEach(node => {
+                const lvl = node.abstraction_level != null ? parseInt(node.abstraction_level) : null;
+                node.z = zFromAbstractionLevel(lvl) ?? node.version_z ?? 0;
+
+            });
+
+            const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
+            const filteredLinks = data.links.filter(l => {
+                const srcId = l.source?.id ?? l.source;
+                const tgtId = l.target?.id ?? l.target;
+                return filteredNodeIds.has(srcId) && filteredNodeIds.has(tgtId);
+            });
+
+Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
+
+            filteredNodes.forEach(node => {
+                Graph.moveNodeZ(node.id, node.z);
+            });
+        }
 
         slider.min = 1;
-        slider.max = maxEpoch;
-        slider.value = maxEpoch;
-        timeLabel.innerText = `Epoch ${maxEpoch}`;
+        slider.max = 5;
+        currentLevel = parseInt(slider.value);
 
         slider.oninput = (e) => {
-            const epoch = parseInt(e.target.value);
-            timeLabel.innerText = `Epoch ${epoch}`;
-
-            const filteredNodes = data.nodes.filter(n =>
-                n.valid_from == null || n.valid_from <= epoch
-            );
-            const filteredLinks = data.links.filter(l =>
-                l.valid_from == null || l.valid_from <= epoch
-            );
-
-            Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
+            currentLevel = parseInt(e.target.value);
+            applyLevelFilter();
         };
+
+        btnShowAll.onclick = () => {
+            showAllUpTo = !showAllUpTo;
+            applyLevelFilter();
+        };
+
+        applyLevelFilter();
+    } else {
+        // No filter UI present — render everything
+        Graph.graphData(data);
     }
 }
 
@@ -354,11 +412,11 @@ window.dispatch = async (action, payload) => {
             // Group by fromNode and draw
             if (allVectorTargets.length > 0) {
                 clearSuggestionVectors(scene);
-                // Draw all as a flat list from first ghost node (multi-source vectors)
                 allVectorTargets.forEach(({ from, node, color, label }) => {
                     drawSuggestionVectors(scene, from, [{ node, color, label }]);
                 });
             }
+
             // Cross-relations between the newly placed nodes themselves
             for (const cr of (fullResult.cross_relations || [])) {
                 const fromNode = allNodes.find(n => n.node_id === placedNodes.find(p => p.frag.key === cr.from_fragment)?.newNode?.node_id);
@@ -371,6 +429,7 @@ window.dispatch = async (action, payload) => {
                     }]);
                 }
             }
+
             // Build combined suggestion result for the panel
             const combinedRelations = [];
             for (const { frag, newNode } of placedNodes) {
@@ -390,7 +449,6 @@ window.dispatch = async (action, payload) => {
             }
 
             UI.renderAISuggestionPanel(
-                // Pass first placed node as "anchor" for display
                 allNodes.find(n => n.node_id === placedNodes[0]?.newNode?.node_id) || placedNodes[0]?.newNode || {},
                 {
                     ...fullResult,
@@ -432,7 +490,87 @@ window.dispatch = async (action, payload) => {
     if (action === 'REFRESH') {
         refreshGraph();
     }
+
+    if (action === 'REFLOW') {
+        if (state.graphData) reflowGraph(Graph, state.graphData);
+    }
+
+    if (action === 'MOVE_NODE_Z') {
+        // payload = { id, z, level }
+        const node = (state.graphData?.nodes || []).find(n => n.id === payload.id);
+        if (!node) return;
+        node.z = payload.z;
+        if (payload.level != null) node.abstraction_level = payload.level;
+        Graph.moveNodeZ(payload.id, payload.z);
+        // Auto-save Z to DB so it persists without needing Save Positions
+        await fetch(`/api/nodes/${payload.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ z: payload.z }),
+        });
+    }
+
+    if (action === 'NEW_VERSION') {
+        // payload = source node id
+        const sourceNode = (state.graphData?.nodes || []).find(n => n.id === payload);
+        if (!sourceNode) return;
+
+        const VERSION_Z_STEP = 80;
+        const newZ = (sourceNode.z ?? 0) - VERSION_Z_STEP;
+
+        const res = await fetch('/api/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                content:           (sourceNode.content || sourceNode.name) + ' (v2)',
+                parent_type:       sourceNode.parent_type || sourceNode.node_type || 'Concept',
+                abstraction_level: sourceNode.abstraction_level,
+                confidence_tier:   sourceNode.confidence_tier,
+                x: sourceNode.x,
+                y: sourceNode.y,
+                z: newZ,
+            }),
+        });
+        const newNode = await res.json();
+
+        // Connect with HAS_VERSION edge
+        await fetch('/api/links', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                node_a:      sourceNode.id,
+                node_b:      newNode.id,
+                rel_type:    'HAS_VERSION',
+                weight:      1.0,
+                confidence:  1.0,
+                status:      'ACTIVE',
+            }),
+        });
+
+        await refreshGraph();
+
+        // Select the new node so the user can rename/edit it immediately
+        const fresh = state.graphData?.nodes.find(n => n.id === newNode.id);
+        if (fresh) {
+            flyToNode(fresh, 1200);
+            const neighbors = await fetch(`/graph/node/${fresh.id}/neighbors`).then(r => r.json());
+            UI.renderNodeInspector(fresh, neighbors, (nb) => {
+                const full = (state.graphData?.nodes || []).find(n => n.node_id === nb.code) || nb;
+                handleNodeClick(full);
+            });
+        }
+
+        showFlash('New version created — Shift+drag to reposition on Z axis');
+    }
 };
+
+function showFlash(msg) {
+    const f = document.createElement('div');
+    f.className = 'success-flash';
+    f.textContent = msg;
+    document.body.appendChild(f);
+    setTimeout(() => f.remove(), 2500);
+}
 
 // Initial load
 refreshGraph();

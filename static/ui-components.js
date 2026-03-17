@@ -73,12 +73,28 @@ export const UI = {
                         <input type="number" id="an-valid-to" min="1" step="1" placeholder="e.g. 3">
                     </div>
                     <div class="field-group">
-                        <label>Position <span class="opt">(optional)</span></label>
+                        <label>Position <span class="opt">(optional — leave blank, Reflow will place it)</span></label>
                         <div class="field-row">
                             <input type="number" id="an-x" step="any" placeholder="X">
                             <input type="number" id="an-y" step="any" placeholder="Y">
-                            <input type="number" id="an-z" step="any" placeholder="Z">
+                            <input type="number" id="an-z" step="any" placeholder="Z override">
                         </div>
+                    </div>
+                    <div class="field-group">
+                        <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
+                        <div class="slider-row">
+                            <input type="range" id="an-abstraction" min="1" max="5" step="1" value="3">
+                            <span id="an-abstraction-val" style="color:#8896b8;width:90px;font-size:10px;flex-shrink:0;">3 — Hypothesis</span>
+                        </div>
+                    </div>
+                    <div class="field-group">
+                        <label>Confidence Tier <span class="opt">(drives edge distances)</span></label>
+                        <select id="an-confidence-tier">
+                            <option value="0">0 — Speculative</option>
+                            <option value="1" selected>1 — Working</option>
+                            <option value="2">2 — Provisional</option>
+                            <option value="3">3 — Confirmed</option>
+                        </select>
                     </div>
                     <div id="an-error" class="modal-error" style="display:none"></div>
                 </div>
@@ -94,6 +110,14 @@ export const UI = {
         document.getElementById('add-node-cancel').onclick = () => modal.remove();
         modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 
+        const ABSTRACTION_LABELS = ['', 'Observation', 'Evidence', 'Hypothesis', 'Principle', 'Axiom'];
+        const absSlider = document.getElementById('an-abstraction');
+        const absVal    = document.getElementById('an-abstraction-val');
+        absSlider.oninput = () => {
+            const v = parseInt(absSlider.value);
+            absVal.textContent = `${v} — ${ABSTRACTION_LABELS[v]}`;
+        };
+
         document.getElementById('add-node-submit').onclick = async () => {
             const content = document.getElementById('an-content').value.trim();
             if (!content) {
@@ -102,12 +126,14 @@ export const UI = {
                 err.style.display = 'block';
                 return;
             }
-            const parent_type = document.getElementById('an-type').value;
-            const vf = document.getElementById('an-valid-from').value;
-            const vt = document.getElementById('an-valid-to').value;
-            const xv = document.getElementById('an-x').value;
-            const yv = document.getElementById('an-y').value;
-            const zv = document.getElementById('an-z').value;
+            const parent_type       = document.getElementById('an-type').value;
+            const vf                = document.getElementById('an-valid-from').value;
+            const vt                = document.getElementById('an-valid-to').value;
+            const xv                = document.getElementById('an-x').value;
+            const yv                = document.getElementById('an-y').value;
+            const zv                = document.getElementById('an-z').value;
+            const abstraction_level = parseInt(document.getElementById('an-abstraction').value);
+            const confidence_tier   = parseInt(document.getElementById('an-confidence-tier').value);
 
             const btn = document.getElementById('add-node-submit');
             btn.textContent = 'Creating...';
@@ -120,6 +146,8 @@ export const UI = {
                 x: xv !== '' ? parseFloat(xv) : null,
                 y: yv !== '' ? parseFloat(yv) : null,
                 z: zv !== '' ? parseFloat(zv) : null,
+                abstraction_level,
+                confidence_tier,
             });
             modal.remove();
             showFlash(`Node ${result.node_id} created`);
@@ -134,6 +162,7 @@ export const UI = {
         if (existing) existing.remove();
 
         const NODE_TYPES = Object.keys(TYPE_COLORS);
+        const currentType = node.parent_type || node.node_type || 'Concept';
 
         const modal = document.createElement('div');
         modal.id = 'edit-node-modal';
@@ -148,7 +177,7 @@ export const UI = {
                 <div class="modal-body">
                     <div class="field-group">
                         <label>Content <span class="req">*</span></label>
-                        <textarea id="en-content" rows="3">${node.content || node.name || ''}</textarea>
+                        <textarea id="en-content" rows="4" placeholder="Describe this concept...">${node.content || node.name || ''}</textarea>
                     </div>
                     <div class="field-row">
                         <div class="field-group">
@@ -176,9 +205,12 @@ export const UI = {
         `;
 
         document.body.appendChild(modal);
-        document.getElementById('edit-node-close').onclick = () => modal.remove();
+        document.getElementById('edit-node-close').onclick  = () => modal.remove();
         document.getElementById('edit-node-cancel').onclick = () => modal.remove();
         modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+
+        // Focus textarea so user can start typing immediately
+        setTimeout(() => document.getElementById('en-content')?.focus(), 50);
 
         document.getElementById('edit-node-submit').onclick = async () => {
             const content = document.getElementById('en-content').value.trim();
@@ -194,14 +226,22 @@ export const UI = {
 
             const vf = document.getElementById('en-valid-from').value;
             const vt = document.getElementById('en-valid-to').value;
-            await onSubmit({
-                content,
-                parent_type: document.getElementById('en-type').value,
-                valid_from: vf ? parseInt(vf) : null,
-                valid_to:   vt ? parseInt(vt) : null,
-            });
-            modal.remove();
-            showFlash('Node updated');
+            try {
+                await onSubmit({
+                    content,
+                    parent_type: document.getElementById('en-type').value,
+                    valid_from: vf ? parseInt(vf) : null,
+                    valid_to:   vt ? parseInt(vt) : null,
+                });
+                modal.remove();
+                showFlash('Node updated');
+            } catch (err) {
+                btn.textContent = 'Save Changes →';
+                btn.disabled = false;
+                const errEl = document.getElementById('en-error');
+                errEl.textContent = 'Save failed — check console.';
+                errEl.style.display = 'block';
+            }
         };
     },
 
@@ -678,6 +718,16 @@ export const UI = {
                 <div style="font-size:10px;color:#445070;margin-top:4px;font-family:'DM Mono',monospace;">
                     x:${node.x != null ? node.x.toFixed(1) : '—'} y:${node.y != null ? node.y.toFixed(1) : '—'} z:${node.z != null ? node.z.toFixed(1) : '—'}
                 </div>
+                <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+                    <div style="font-size:10px;color:#445070;font-family:'DM Mono',monospace;letter-spacing:0.08em;margin-bottom:6px;">
+                        ABSTRACTION — <span style="color:${(node.abstraction_level||3) >= 4 ? '#ffa500' : (node.abstraction_level||3) <= 2 ? '#4488ff' : '#8896b8'}">L${node.abstraction_level||3} ${{1:'Observation',2:'Evidence',3:'Hypothesis',4:'Principle',5:'Axiom'}[node.abstraction_level||3]}</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input type="range" id="insp-abstraction" min="1" max="5" step="1" value="${node.abstraction_level||3}" style="flex:1;accent-color:var(--concept);cursor:pointer;">
+                        <span id="insp-abstraction-val" style="font-size:10px;color:var(--concept);width:14px;text-align:right;font-family:'DM Mono',monospace;">${node.abstraction_level||3}</span>
+                        <button id="insp-abstraction-save" style="background:rgba(0,200,160,0.08);border:1px solid rgba(0,200,160,0.3);color:var(--concept);border-radius:4px;padding:3px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;white-space:nowrap;">Save Z</button>
+                    </div>
+                </div>
             </div>
 
             <div class="neighbor-list">
@@ -704,6 +754,33 @@ export const UI = {
         `;
 
         el.style.display = 'block';
+
+        // Abstraction level slider
+        const absSliderInsp = document.getElementById('insp-abstraction');
+        const absValInsp    = document.getElementById('insp-abstraction-val');
+        if (absSliderInsp) {
+            const LEVEL_NAMES = {1:'Obs',2:'Evidence',3:'Hypothesis',4:'Principle',5:'Axiom'};
+            absSliderInsp.oninput = () => {
+                const v = absSliderInsp.value;
+                absValInsp.textContent = v;
+            };
+            document.getElementById('insp-abstraction-save').onclick = async () => {
+                const level = parseInt(absSliderInsp.value);
+                const newZ  = (level - 3) * 60; // L1=-120, L2=-60, L3=0, L4=60, L5=120
+                // Only persist abstraction_level — z is derived from it on every load.
+                // Saving z as a raw world coordinate caused stale positions after refresh.
+                await fetch(`/api/nodes/${node.id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ abstraction_level: level }),
+                });
+                // Move in live scene immediately, no full refresh needed
+                node.abstraction_level = level;
+                node.z = newZ;
+                window.dispatch('MOVE_NODE_Z', { id: node.id, z: newZ, level });
+                showFlash(`L${level} → Z ${newZ > 0 ? '+' : ''}${newZ}`);
+            };
+        }
 
         window.__inspectNode = (code) => {
             const nb = neighbors.find(n => n.code === code);

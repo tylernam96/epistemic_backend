@@ -23,7 +23,6 @@ class GraphService:
 
     @staticmethod
     def _fetch_neighbors(tx, node_id: str):
-        # Match by elementId (Neo4j internal) or node_id property
         result = tx.run("""
             MATCH (n)
             WHERE elementId(n) = $eid OR n.node_id = $nid
@@ -54,34 +53,32 @@ class GraphService:
             raw_type = record["rel_type_prop"] or record["rel_type_label"] or "RELATES_TO"
             name = record["neighbor_content"] or record["neighbor_name"] or record["neighbor_node_id"] or "Unnamed"
             neighbors.append({
-                "rel_id":       record["rel_id"],
-                "rel_type":     raw_type.upper().strip(),
-                "direction":    "out" if record["is_outgoing"] else "in",
-                "id":           record["neighbor_eid"],
-                "code":         record["neighbor_node_id"],
-                "name":         name,
+                "rel_id":        record["rel_id"],
+                "rel_type":      raw_type.upper().strip(),
+                "direction":     "out" if record["is_outgoing"] else "in",
+                "id":            record["neighbor_eid"],
+                "code":          record["neighbor_node_id"],
+                "name":          name,
                 "justification": record["justification"] or "",
-                "mechanism":    record["mechanism"] or "",
-                "weight":       record["weight"],
-                "confidence":   record["confidence"],
+                "mechanism":     record["mechanism"] or "",
+                "weight":        record["weight"],
+                "confidence":    record["confidence"],
                 "evidence_type": record["evidence_type"] or "",
-                "scope":        record["scope"] or "",
-                "status":       record["status"] or "",
-                "valid_from":   _coerce_epoch(record["valid_from"]),
-                "valid_to":     _coerce_epoch(record["valid_to"]),
+                "scope":         record["scope"] or "",
+                "status":        record["status"] or "",
+                "valid_from":    _coerce_epoch(record["valid_from"]),
+                "valid_to":      _coerce_epoch(record["valid_to"]),
             })
         return neighbors
 
     @staticmethod
     def _fetch_3d_data(tx, limit):
-        # All nodes including isolated ones
         nodes_result = tx.run("MATCH (n) RETURN n LIMIT $limit", limit=limit)
         nodes_map = {}
         for record in nodes_result:
             node = record['n']
             nodes_map[node.element_id] = _build_node(node)
 
-        # All relationships
         rels_result = tx.run("MATCH (n)-[r]->(m) RETURN n, r, m LIMIT $limit", limit=limit)
         links = []
         for record in rels_result:
@@ -95,7 +92,9 @@ class GraphService:
                 "target":        record['m'].element_id,
                 "type":          rel.type,
                 "rel_type":      raw_type,
-                "weight":        rel_props.get("weight", 1.0),
+                "weight":        rel_props.get("weight") or 1.0,
+                "confidence":    rel_props.get("confidence") or 0.75,
+                "status":        rel_props.get("status") or "",
                 "justification": rel_props.get("justification", ""),
                 "color":         rel_props.get("color", ""),
                 "valid_from":    _coerce_epoch(rel_props.get("valid_from")),
@@ -129,27 +128,36 @@ def _build_node(node):
         "Unnamed"
     )
 
-    # x/y/z — return as float if present, else None (frontend handles missing coords)
     def _float(val):
         try:
             return float(val) if val is not None else None
         except (ValueError, TypeError):
             return None
 
+    def _int(val):
+        try:
+            return int(val) if val is not None else None
+        except (ValueError, TypeError):
+            return None
+
     return {
-        "id":          node.element_id,
-        "name":        name,
-        "content":     props.get("content", ""),
-        "node_id":     props.get("node_id", ""),
-        "node_type":   node_type,
-        "parent_type": props.get("parent_type", node_type),
-        "is_version":  is_version,
-        "valid_from":  _coerce_epoch(props.get("valid_from")),
-        "valid_to":    _coerce_epoch(props.get("valid_to")),
-        "x":           _float(props.get("x")),
-        "y":           _float(props.get("y")),
-        "z":           _float(props.get("z")),
-        "props":       props
+        "id":                node.element_id,
+        "name":              name,
+        "content":           props.get("content", ""),
+        "node_id":           props.get("node_id", ""),
+        "node_type":         node_type,
+        "parent_type":       props.get("parent_type", node_type),
+        "is_version":        is_version,
+        "valid_from":        _coerce_epoch(props.get("valid_from")),
+        "valid_to":          _coerce_epoch(props.get("valid_to")),
+        # z is intentionally NOT returned — the frontend derives it from
+        # abstraction_level via zFromAbstractionLevel(). Returning the raw
+        # DB z caused stale values (e.g. z=1) to override the computed position.
+        "x":                 _float(props.get("x")),
+        "y":                 _float(props.get("y")),
+        "abstraction_level": _int(props.get("abstraction_level")),
+        "confidence_tier":   _int(props.get("confidence_tier")),
+        "props":             props,
     }
 
 
