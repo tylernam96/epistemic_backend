@@ -18,6 +18,561 @@ function showFlash(msg, isError = false) {
     setTimeout(() => flash.remove(), 2500);
 }
 
+// Cosine similarity helper
+function cosineSimilarity(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    
+    let dot = 0, magA = 0, magB = 0;
+    for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        magA += a[i] * a[i];
+        magB += b[i] * b[i];
+    }
+    
+    magA = Math.sqrt(magA);
+    magB = Math.sqrt(magB);
+    
+    if (magA === 0 || magB === 0) return 0;
+    return dot / (magA * magB);
+}
+
+async function suggestPositionFromGraph(content, existingNodes, existingRelations, parentType = 'Concept') {
+    console.log('🔍 Calling graph-aware API with', existingNodes.length, 'nodes');
+    
+    try {
+                console.log('📤 Preparing API request...');
+
+        // Build rich node context - include EVERYTHING about each node
+        const nodesForApi = existingNodes.map(n => {
+            // Find all relations for this node
+            const nodeId = n.node_id || n.id;
+            const outgoingRels = existingRelations.filter(r => 
+                (r.source?.id === nodeId || r.source === nodeId)
+            ).map(r => ({
+                type: r.rel_type || r.type,
+                target: r.target?.id || r.target
+            }));
+            
+            const incomingRels = existingRelations.filter(r => 
+                (r.target?.id === nodeId || r.target === nodeId)
+            ).map(r => ({
+                type: r.rel_type || r.type,
+                source: r.source?.id || r.source
+            }));
+            
+            return {
+                id: n.id,
+                node_id: n.node_id,
+                content: n.content || n.name || '',
+                parent_type: n.parent_type || n.node_type || 'Concept',
+                abstraction_level: n.abstraction_level || 3,
+                confidence_tier: n.confidence_tier,
+                valid_from: n.valid_from,
+                valid_to: n.valid_to,
+                x: n.x || 0,
+                y: n.y || 0,
+                z: n.z || 0,
+                embedding: n.embedding, // Include if available
+                relations: {
+                    outgoing: outgoingRels.slice(0, 10),
+                    incoming: incomingRels.slice(0, 10)
+                },
+                // Include a snippet of the content for quick reference
+                content_preview: (n.content || n.name || '').substring(0, 100)
+            };
+        }).slice(0, 30); // Limit to 30 most relevant nodes
+ 
+        const relationsForApi = existingRelations.slice(0, 50).map(r => ({
+    source: r.source?.id || r.source,
+    target: r.target?.id || r.target,
+    rel_type: r.rel_type || r.type || 'RELATES_TO'
+}));
+               console.log(`📡 Sending ${nodesForApi.length} nodes and ${relationsForApi.length} relations to API...`);
+        // Also send a summary of the graph structure
+        const graphSummary = {
+            totalNodes: existingNodes.length,
+            totalRelations: existingRelations.length,
+            nodeTypes: Object.entries(
+                existingNodes.reduce((acc, n) => {
+                    const type = n.parent_type || n.node_type || 'Concept';
+                    acc[type] = (acc[type] || 0) + 1;
+                    return acc;
+                }, {})
+            ),
+            relationTypes: Object.entries(
+                existingRelations.reduce((acc, r) => {
+                    const type = r.rel_type || r.type || 'RELATES_TO';
+                    acc[type] = (acc[type] || 0) + 1;
+                    return acc;
+                }, {})
+            )
+        };
+        
+        const response = await fetch('/api/placement/analyze-graph', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                content,
+                parent_type: parentType,
+                existing_nodes: nodesForApi,
+                existing_relations: relationsForApi,  // ✅ ADD THIS LINE
+                graph_summary: graphSummary,
+                // Include a few candidate nodes that might be related
+                focus_nodes: nodesForApi.slice(0, 10) // Focus on first 10 nodes
+            })
+        });
+        if (!response.ok) {
+            throw new Error(`API error: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('✅ Graph API result:', result);
+        
+        // Format explanation with more detail
+        let explanation = result.reasoning?.spatial_rationale || '';
+        
+        if (result.reasoning?.primary_influences?.length > 0) {
+            explanation += '\n\n📊 Strongest Connections:\n';
+            result.reasoning.primary_influences.forEach(inf => {
+                const node = existingNodes.find(n => n.node_id === inf.node_id);
+                const nodeName = node ? (node.content || node.name || '').slice(0, 40) : inf.node_id;
+                const similarity = inf.influence_weight ? 
+                    ` (${(inf.influence_weight * 100).toFixed(0)}% match)` : '';
+                explanation += `• "${nodeName}"${similarity}: ${inf.reason}\n`;
+            });
+        }
+        
+        // Add relation predictions
+        if (result.predicted_relations?.length > 0) {
+            explanation += '\n🔮 Suggested Relations:\n';
+            result.predicted_relations.forEach(rel => {
+                const targetNode = existingNodes.find(n => n.node_id === rel.target_node_id);
+                const targetName = targetNode ? 
+                    (targetNode.content || targetNode.name || '').slice(0, 30) : 
+                    rel.target_node_id;
+                explanation += `• ${rel.rel_type} → "${targetName}" (${(rel.confidence * 100).toFixed(0)}% confidence): ${rel.justification}\n`;
+            });
+        }
+        
+        return {
+            position: result.position,
+            explanation,
+            label: `✨ ${result.reasoning?.cluster_placement || 'Graph-aware placement'}`,
+            relations: result.predicted_relations || [],
+            primaryInfluences: result.reasoning?.primary_influences || []
+        };
+        
+    } catch (err) {
+        console.error('Graph analysis failed:', err);
+        return {
+            position: {
+                x: (Math.random() - 0.5) * 300,
+                y: (Math.random() - 0.5) * 300,
+                z: 0
+            },
+            explanation: `Error analyzing graph: ${err.message}. Using random placement.`,
+            label: '⚠️ Fallback placement',
+            relations: []
+        };
+    }
+}
+
+function showGraphAwareExplanation(node, suggestionData) {
+    console.log('📊 Showing explanation for node:', node, suggestionData);
+    
+    // Remove any existing panel
+    const existing = document.getElementById('graph-explanation');
+    if (existing) existing.remove();
+    
+    const panel = document.createElement('div');
+    panel.id = 'graph-explanation';
+    panel.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: 450px;
+        max-height: 80vh;
+        overflow-y: auto;
+        background: rgba(8,10,16,0.98);
+        border: 1px solid #00c8a0;
+        border-radius: 12px;
+        padding: 20px;
+        z-index: 10000;
+        font-family: 'DM Mono', monospace;
+        box-shadow: 0 20px 60px rgba(0,200,160,0.2);
+        backdrop-filter: blur(10px);
+        animation: slideInRight 0.3s ease-out;
+    `;
+    
+    // Create influences HTML
+    const influences = suggestionData.primaryInfluences || [];
+    const relations = suggestionData.relations || [];
+    
+    let influencesHtml = '';
+    if (influences.length > 0) {
+        influencesHtml = `
+            <div style="margin-bottom: 20px;">
+                <div style="color: #445070; font-size: 10px; letter-spacing: 0.05em; margin-bottom: 10px;">🔗 PRIMARY INFLUENCES</div>
+                ${influences.map(inf => {
+                   const barLength = Math.min(10, Math.max(0, Math.floor(inf.influence_weight * 10)));
+const emptyLength = 10 - barLength;
+const weightBar = '█'.repeat(barLength) + '░'.repeat(emptyLength);
+                    return `
+                    <div style="margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.02); border-radius: 6px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: #c8d0e0; font-size: 11px;">${inf.node_id}</span>
+                            <span style="color: #00c8a0; font-size: 10px;">${(inf.influence_weight * 100).toFixed(0)}%</span>
+                        </div>
+                        <div style="color: #445070; font-family: monospace; font-size: 12px; letter-spacing: 2px; margin-bottom: 4px;">
+                            ${weightBar}
+                        </div>
+                        <div style="color: #8e99b3; font-size: 10px;">${inf.reason}</div>
+                    </div>
+                `}).join('')}
+            </div>
+        `;
+    }
+    
+    // Create relations HTML
+    let relationsHtml = '';
+    if (relations.length > 0) {
+        relationsHtml = `
+            <div style="margin-bottom: 20px;">
+                <div style="color: #445070; font-size: 10px; letter-spacing: 0.05em; margin-bottom: 10px;">🔮 PREDICTED RELATIONSHIPS</div>
+                ${relations.map(rel => `
+                    <div style="margin-bottom: 10px; padding: 10px; background: rgba(0,200,160,0.03); border-radius: 6px; border-left: 3px solid #00c8a0;">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                            <span style="color: #00c8a0; font-size: 10px; font-weight: 600;">${rel.rel_type}</span>
+                            <span style="color: #445070; font-size: 9px;">→</span>
+                            <span style="color: #c8d0e0; font-size: 10px;">${rel.target_node_id}</span>
+                            <span style="color: #445070; font-size: 9px;">${(rel.confidence * 100).toFixed(0)}%</span>
+                        </div>
+                        <div style="color: #8e99b3; font-size: 10px;">${rel.justification}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+    
+    panel.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+            <span style="font-size: 20px;">🧠</span>
+            <span style="color: #00c8a0; font-size: 12px; font-weight: 600; letter-spacing: 0.05em; flex:1;">GRAPH-AWARE PLACEMENT</span>
+            <button id="close-panel" style="background:none; border:none; color:#445070; cursor:pointer; font-size:16px;">✕</button>
+        </div>
+        
+        <div style="margin-bottom: 20px; padding: 15px; background: rgba(0,200,160,0.05); border-radius: 8px;">
+            <div style="color: #c8d0e0; font-size: 14px; font-weight: 500; margin-bottom: 8px;">${(node.content || node.name || '').substring(0, 100)}</div>
+            <div style="color: #8e99b3; font-size: 12px; line-height: 1.6; white-space: pre-wrap;">${suggestionData.explanation || 'No explanation provided.'}</div>
+        </div>
+        
+        ${influencesHtml}
+        ${relationsHtml}
+        
+        <div style="display: flex; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #1e2535;">
+            <div style="flex: 1;">
+                <div style="color: #445070; font-size: 9px; margin-bottom: 4px;">POSITION</div>
+                <div style="color: #00c8a0; font-size: 11px;">x: ${suggestionData.position?.x?.toFixed(1) || '?'}</div>
+                <div style="color: #00c8a0; font-size: 11px;">y: ${suggestionData.position?.y?.toFixed(1) || '?'}</div>
+            </div>
+            <div style="flex: 2;">
+                <div style="color: #445070; font-size: 9px; margin-bottom: 4px;">CLUSTER</div>
+                <div style="color: #8e99b3; font-size: 11px;">${(suggestionData.label || '').replace('✨ ', '')}</div>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(panel);
+    
+    // Add animation keyframes if not present
+    if (!document.getElementById('explanation-keyframes')) {
+        const style = document.createElement('style');
+        style.id = 'explanation-keyframes';
+        style.textContent = `
+            @keyframes slideInRight {
+                from { transform: translateX(100%); opacity: 0; }
+                to { transform: translateX(0); opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Close button handler
+    document.getElementById('close-panel').onclick = () => {
+        panel.style.animation = 'slideInRight 0.3s reverse';
+        setTimeout(() => panel.remove(), 300);
+    };
+    
+    // Auto-dismiss after 20 seconds
+    setTimeout(() => {
+        if (panel.parentNode) {
+            panel.style.animation = 'slideInRight 0.3s reverse';
+            setTimeout(() => panel.remove(), 300);
+        }
+    }, 20000);
+}
+
+// Fallback embedding function
+async function fallbackToEmbedding(content, existingNodes, parentType) {
+    try {
+        // Get embedding
+        const embedRes = await fetch('/api/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: content })
+        });
+        
+        if (!embedRes.ok) throw new Error("Embedding failed");
+        
+        const { embedding } = await embedRes.json();
+        
+        // Find nodes with embeddings
+        const nodesWithEmbeddings = existingNodes.filter(n => 
+            n.embedding && Array.isArray(n.embedding) && n.embedding.length > 0
+        );
+        
+        if (nodesWithEmbeddings.length === 0) {
+            return {
+                position: { x: (Math.random() - 0.5) * 300, y: (Math.random() - 0.5) * 300 },
+                explanation: "No embedding data available. Using random placement.",
+                label: "⚠️ Random placement",
+                relations: []
+            };
+        }
+        
+        // Calculate similarities
+        const similarities = nodesWithEmbeddings.map(node => {
+            const sim = cosineSimilarity(embedding, node.embedding);
+            return { node, sim };
+        });
+        
+        similarities.sort((a, b) => b.sim - a.sim);
+        const topMatches = similarities.slice(0, 5);
+        
+        // Weighted centroid
+        let totalWeight = 0;
+        let weightedX = 0;
+        let weightedY = 0;
+        
+        topMatches.forEach(({ node, sim }) => {
+            const weight = Math.max(sim, 0.3);
+            weightedX += (node.x || 0) * weight;
+            weightedY += (node.y || 0) * weight;
+            totalWeight += weight;
+        });
+        
+        const position = {
+            x: (weightedX / totalWeight) + (Math.random() - 0.5) * 20,
+            y: (weightedY / totalWeight) + (Math.random() - 0.5) * 20
+        };
+        
+        const avgSim = topMatches.reduce((sum, m) => sum + m.sim, 0) / topMatches.length;
+        
+        return {
+            position,
+            explanation: `Based on semantic similarity (${(avgSim*100).toFixed(0)}% average match) with existing nodes. Placed near conceptually similar content.`,
+            label: `✨ Embedding-based placement`,
+            relations: [],
+            primaryInfluences: topMatches.slice(0, 3).map(m => ({
+                node_id: m.node.node_id || m.node.id,
+                influence_weight: m.sim,
+                reason: `Semantic similarity: ${(m.sim*100).toFixed(0)}%`
+            }))
+        };
+        
+    } catch (err) {
+        console.error("Fallback failed:", err);
+        return {
+            position: { x: (Math.random() - 0.5) * 300, y: (Math.random() - 0.5) * 300 },
+            explanation: "Error in analysis. Using random placement.",
+            label: "⚠️ Error - random placement",
+            relations: []
+        };
+    }
+}
+
+// ── Placement helpers ──────────────────────────────────────────────────────
+
+// Minimum distance between any two nodes before we nudge outward.
+const MIN_NODE_DISTANCE = 45;
+
+/**
+ * Given a candidate (x, y) and the full list of existing nodes, nudge the
+ * position outward from the local centroid until it is at least MIN_NODE_DISTANCE
+ * away from every existing node.  Iterates up to 12 times; each miss doubles
+ * the step so it escapes dense clusters quickly.
+ */
+function repelFromOverlap(x, y, existingNodes, minDist = MIN_NODE_DISTANCE) {
+    const nodesWithPos = existingNodes.filter(n => n.x != null && n.y != null);
+    if (nodesWithPos.length === 0) return { x, y };
+
+    // Centroid of all placed nodes — we push *away* from it when overlapping
+    const cx = nodesWithPos.reduce((s, n) => s + n.x, 0) / nodesWithPos.length;
+    const cy = nodesWithPos.reduce((s, n) => s + n.y, 0) / nodesWithPos.length;
+
+    let px = x, py = y;
+    for (let iter = 0; iter < 12; iter++) {
+        const tooClose = nodesWithPos.find(n =>
+            Math.hypot(px - n.x, py - n.y) < minDist
+        );
+        if (!tooClose) break;
+
+        // Direction from global centroid through current position
+        let dx = px - cx, dy = py - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        dx /= len; dy /= len;
+
+        const step = minDist * (1 + iter * 0.5);
+        px += dx * step;
+        py += dy * step;
+    }
+    return { x: px, y: py };
+}
+
+/**
+ * Given a CONTRADICTS target node at (tx, ty) and the graph centroid,
+ * place the new node on the *opposite* side of the target from the centroid,
+ * at `distance` units away.
+ */
+function placeOpposite(targetNode, existingNodes, distance = 120) {
+    const nodesWithPos = existingNodes.filter(n => n.x != null && n.y != null);
+    const cx = nodesWithPos.length
+        ? nodesWithPos.reduce((s, n) => s + n.x, 0) / nodesWithPos.length
+        : 0;
+    const cy = nodesWithPos.length
+        ? nodesWithPos.reduce((s, n) => s + n.y, 0) / nodesWithPos.length
+        : 0;
+
+    const tx = targetNode.x || 0;
+    const ty = targetNode.y || 0;
+
+    // Vector from centroid → target; extend past target
+    let dx = tx - cx, dy = ty - cy;
+    const len = Math.hypot(dx, dy) || 1;
+    dx /= len; dy /= len;
+
+    return {
+        x: tx + dx * distance + (Math.random() - 0.5) * 20,
+        y: ty + dy * distance + (Math.random() - 0.5) * 20,
+    };
+}
+
+// Suggest position based on semantic similarity
+async function suggestPositionFromSimilarity(content, existingNodes) {
+    if (!content || content.length < 10) {
+        return {
+            explanation: "Content too short for semantic analysis. Please provide more detail for better placement suggestions.",
+            label: "⚠️ Content too short"
+        };
+    }
+    
+    try {
+        const embedRes = await fetch('/api/embed', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: content })
+        });
+        if (!embedRes.ok) {
+            return {
+                explanation: "Could not generate embedding for this content. Using random placement.",
+                label: "⚠️ Embedding failed"
+            };
+        }
+        
+        const { embedding } = await embedRes.json();
+        
+        const nodesWithEmbeddings = existingNodes.filter(n => 
+            n.embedding && Array.isArray(n.embedding) && n.embedding.length > 0
+        );
+        
+        if (nodesWithEmbeddings.length === 0) {
+            return {
+                explanation: "No existing nodes have embeddings yet.",
+                label: "✨ No reference points yet"
+            };
+        }
+        
+        const similarities = nodesWithEmbeddings.map(node => ({
+            node,
+            sim: cosineSimilarity(embedding, node.embedding)
+        })).sort((a, b) => b.sim - a.sim);
+        
+        const topMatches  = similarities.slice(0, 5);
+        const goodMatches = topMatches.filter(m => m.sim > 0.6);
+
+        // ── Check if the top predicted relation is a CONTRADICTION ──
+        // (Relations arrive later via Gemini, but we can pre-check by looking at
+        // sim range: very-high sim of a node that has "contradict" in its content
+        // is a weak proxy — real check happens in the async relations block.)
+        // We expose a hook: if the caller has pre-computed a dominant CONTRADICTS
+        // relation, it can be passed as existingNodes._contradictTarget.
+        const contradictTarget = existingNodes._contradictTarget || null;
+
+        let rawPos;
+
+        if (contradictTarget) {
+            // Place on the opposite side of the CONTRADICTS target
+            rawPos = placeOpposite(contradictTarget, existingNodes, 140);
+        } else if (goodMatches.length === 0) {
+            const bestMatch = topMatches[0];
+            rawPos = {
+                x: (bestMatch.node.x || 0) + (Math.random() - 0.5) * 100,
+                y: (bestMatch.node.y || 0) + (Math.random() - 0.5) * 100,
+            };
+        } else {
+            // Weighted centroid of good matches
+            const totalW = goodMatches.reduce((s, m) => s + m.sim, 0);
+            rawPos = {
+                x: goodMatches.reduce((s, m) => s + (m.node.x || 0) * m.sim, 0) / totalW,
+                y: goodMatches.reduce((s, m) => s + (m.node.y || 0) * m.sim, 0) / totalW,
+            };
+        }
+
+        // ── Apply overlap repulsion ──────────────────────────────────────────
+        const finalPos = repelFromOverlap(rawPos.x, rawPos.y, existingNodes);
+
+        const avgSim = goodMatches.length
+            ? goodMatches.reduce((s, m) => s + m.sim, 0) / goodMatches.length
+            : (topMatches[0]?.sim || 0);
+
+        let explanation = contradictTarget
+            ? `Placed opposite "${(contradictTarget.content || '').slice(0, 40)}" — CONTRADICTS relation pushes to opposing side of the graph.`
+            : avgSim > 0.85
+                ? `Very similar to existing concepts (${(avgSim*100).toFixed(0)}% avg). Placed near the cluster.`
+                : avgSim > 0.7
+                    ? `Related to several existing concepts. Positioned at their centroid.`
+                    : `Somewhat related but distinct. Placed at the cluster periphery.`;
+
+        const matchDetails = (goodMatches.length ? goodMatches : topMatches).slice(0, 3).map(m => ({
+            name: (m.node.content || m.node.name || '').slice(0, 40),
+            sim:  (m.sim * 100).toFixed(0),
+            type: m.node.parent_type || m.node.node_type || 'Concept'
+        }));
+
+        const matchNames = matchDetails.map(m => `"${m.name}" (${m.sim}%)`).join(', ');
+        explanation += `\n\nMost influenced by: ${matchNames}`;
+
+        if (finalPos.x !== rawPos.x || finalPos.y !== rawPos.y) {
+            explanation += '\n\n↔ Position nudged to avoid overlap with nearby nodes.';
+        }
+        
+        return {
+            x: finalPos.x,
+            y: finalPos.y,
+            explanation,
+            label: `✨ Suggested near: ${matchDetails.map(m => m.name).join(', ')}`,
+            matches: matchDetails,
+        };
+        
+    } catch (err) {
+        console.warn('Failed to generate position suggestion:', err);
+        return {
+            explanation: "Error analyzing semantic relationships. Using random placement.",
+            label: "⚠️ Analysis failed"
+        };
+    }
+}
+
 export const UI = {
 
     // -------------------------
@@ -34,125 +589,534 @@ export const UI = {
     },
 
     // -------------------------
-    // Add Node Modal
+    // Add Node Modal with Similarity Placement
     // -------------------------
-    renderAddNodeModal(onSubmit) {
-        const existing = document.getElementById('add-node-modal');
-        if (existing) existing.remove();
+ renderAddNodeModal(onSubmit, existingNodes = [], existingRelations= []) {
+    const existing = document.getElementById('add-node-modal');
+    if (existing) existing.remove();
 
-        const NODE_TYPES = Object.keys(TYPE_COLORS);
+    const NODE_TYPES = Object.keys(TYPE_COLORS);
 
-        const modal = document.createElement('div');
-        modal.id = 'add-node-modal';
-        modal.className = 'creation-modal-overlay';
-        modal.innerHTML = `
-            <div class="creation-modal">
-                <div class="modal-header">
-                    <span class="modal-tag">NEW NODE</span>
-                    <button class="modal-close" id="add-node-close">&#x2715;</button>
+    const modal = document.createElement('div');
+    modal.id = 'add-node-modal';
+    modal.className = 'creation-modal-overlay';
+    modal.innerHTML = `
+        <div class="creation-modal">
+            <div class="modal-header">
+                <span class="modal-tag">NEW NODE</span>
+                <button class="modal-close" id="add-node-close">&#x2715;</button>
+            </div>
+            <div class="modal-body">
+                <div class="field-group">
+                    <label>Content <span class="req">*</span></label>
+                    <textarea id="an-content" rows="3" placeholder="Describe this concept, observation, or event..."></textarea>
+                    
+                    <!-- Suggestion panel -->
+                    <div id="an-suggestion" class="position-suggestion" style="display:none; margin-top:10px; background:rgba(0,200,160,0.03); border:1px solid rgba(0,200,160,0.15); border-radius:8px; overflow:hidden; position:relative;">
+                        <div style="padding:12px 14px; background:rgba(0,200,160,0.02); border-bottom:1px solid rgba(0,200,160,0.1);">
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                                <span style="color:var(--concept); font-size:11px; font-weight:600; letter-spacing:0.05em;">✨ PLACEMENT REASONING</span>
+                                <span style="font-size:10px; color:#445070; font-family:'DM Mono',monospace;" id="an-confidence"></span>
+                            </div>
+                            <div id="an-explanation" style="font-size:12px; color:#8e99b3; line-height:1.6; white-space:pre-wrap; font-family:'DM Mono',monospace; cursor:help;"></div>
+                        </div>
+                        <div style="padding:10px 14px; display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2);">
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <span style="font-size:11px; color:#445070;">Suggested position:</span>
+                                <span id="an-coords" style="font-size:11px; color:var(--concept); font-family:'DM Mono',monospace;">x: — y: —</span>
+                            </div>
+                            <button id="an-use-suggestion" style="background:rgba(0,200,160,0.1); border:1px solid var(--concept); color:var(--concept); border-radius:4px; padding:6px 16px; font-size:11px; cursor:pointer; font-family:'DM Mono',monospace; font-weight:600;">Use This Position</button>
+                        </div>
+                    </div>
+
+                    <!-- Predicted relations ─ populated by background Gemini call -->
+                    <div id="an-relations" style="display:none; margin-top:8px; border:1px solid rgba(0,200,160,0.12); border-radius:8px; overflow:hidden;">
+                        <div style="padding:7px 12px; background:rgba(0,200,160,0.03); border-bottom:1px solid rgba(0,200,160,0.1); display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:10px; color:#445070; letter-spacing:0.08em;">🔮 SUGGESTED RELATIONS</span>
+                            <span style="font-size:9px; color:#1e3040;">toggle to include on creation</span>
+                        </div>
+                        <div id="an-relations-list" style="padding:8px; display:flex; flex-direction:column; gap:5px;"></div>
+                    </div>
+
+                    <!-- Tooltip popup for detailed match info -->
+                    <div id="an-details-popup" style="display:none; position:fixed; background:#0c0e16; border:1px solid var(--concept); border-radius:8px; padding:14px; max-width:350px; z-index:10000; box-shadow:0 10px 40px rgba(0,0,0,0.8); backdrop-filter:blur(8px); pointer-events:none; white-space:pre-wrap; font-family:'DM Mono',monospace; font-size:11px; line-height:1.7; color:#8e99b3;"></div>
                 </div>
-                <div class="modal-body">
+                
+                <div class="field-row">
                     <div class="field-group">
-                        <label>Content <span class="req">*</span></label>
-                        <textarea id="an-content" rows="3" placeholder="Describe this concept, observation, or event..."></textarea>
-                    </div>
-                    <div class="field-row">
-                        <div class="field-group">
-                            <label>Type <span class="req">*</span></label>
-                            <select id="an-type">
-                                ${NODE_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
-                            </select>
-                        </div>
-                        <div class="field-group">
-                            <label>Epoch From <span class="opt">(optional)</span></label>
-                            <input type="number" id="an-valid-from" min="1" step="1" placeholder="e.g. 1">
-                        </div>
-                    </div>
-                    <div class="field-group">
-                        <label>Epoch To <span class="opt">(optional)</span></label>
-                        <input type="number" id="an-valid-to" min="1" step="1" placeholder="e.g. 3">
-                    </div>
-                    <div class="field-group">
-                        <label>Position <span class="opt">(optional — leave blank, Reflow will place it)</span></label>
-                        <div class="field-row">
-                            <input type="number" id="an-x" step="any" placeholder="X">
-                            <input type="number" id="an-y" step="any" placeholder="Y">
-                            <input type="number" id="an-z" step="any" placeholder="Z override">
-                        </div>
-                    </div>
-                    <div class="field-group">
-                        <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
-                        <div class="slider-row">
-                            <input type="range" id="an-abstraction" min="1" max="5" step="1" value="3">
-                            <span id="an-abstraction-val" style="color:#8896b8;width:90px;font-size:10px;flex-shrink:0;">3 — Hypothesis</span>
-                        </div>
-                    </div>
-                    <div class="field-group">
-                        <label>Confidence Tier <span class="opt">(drives edge distances)</span></label>
-                        <select id="an-confidence-tier">
-                            <option value="0">0 — Speculative</option>
-                            <option value="1" selected>1 — Working</option>
-                            <option value="2">2 — Provisional</option>
-                            <option value="3">3 — Confirmed</option>
+                        <label>Type <span class="req">*</span></label>
+                        <select id="an-type">
+                            ${NODE_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}
                         </select>
                     </div>
-                    <div id="an-error" class="modal-error" style="display:none"></div>
+                    <div class="field-group">
+                        <label>Epoch From <span class="opt">(optional)</span></label>
+                        <input type="number" id="an-valid-from" min="1" step="1" placeholder="e.g. 1">
+                    </div>
                 </div>
-                <div class="modal-footer">
-                    <button class="modal-btn-cancel" id="add-node-cancel">Cancel</button>
-                    <button class="modal-btn-confirm" id="add-node-submit">Create Node &#x2192;</button>
+                <div class="field-group">
+                    <label>Epoch To <span class="opt">(optional)</span></label>
+                    <input type="number" id="an-valid-to" min="1" step="1" placeholder="e.g. 3">
                 </div>
+                <div class="field-group">
+                    <label>Position <span class="opt">(leave blank for AI-suggested)</span></label>
+                    <div class="field-row">
+                        <input type="number" id="an-x" step="any" placeholder="X">
+                        <input type="number" id="an-y" step="any" placeholder="Y">
+                        <input type="number" id="an-z" step="any" placeholder="Z override">
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
+                    <div class="slider-row">
+                        <input type="range" id="an-abstraction" min="1" max="5" step="1" value="3">
+                        <span id="an-abstraction-val" style="color:#8896b8;width:90px;font-size:10px;flex-shrink:0;">3 — Hypothesis</span>
+                    </div>
+                </div>
+                <div class="field-group">
+                    <label>Confidence Tier <span class="opt">(drives edge distances)</span></label>
+                    <select id="an-confidence-tier">
+                        <option value="0">0 — Speculative</option>
+                        <option value="1" selected>1 — Working</option>
+                        <option value="2">2 — Provisional</option>
+                        <option value="3">3 — Confirmed</option>
+                    </select>
+                </div>
+                <div id="an-error" class="modal-error" style="display:none"></div>
             </div>
-        `;
+            <div class="modal-footer">
+                <button class="modal-btn-cancel" id="add-node-cancel">Cancel</button>
+                <button class="modal-btn-confirm" id="add-node-submit">Create Node &#x2192;</button>
+            </div>
+        </div>
+    `;
 
-        document.body.appendChild(modal);
-        document.getElementById('add-node-close').onclick = () => modal.remove();
-        document.getElementById('add-node-cancel').onclick = () => modal.remove();
-        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-
-        const ABSTRACTION_LABELS = ['', 'Observation', 'Evidence', 'Hypothesis', 'Principle', 'Axiom'];
-        const absSlider = document.getElementById('an-abstraction');
-        const absVal    = document.getElementById('an-abstraction-val');
-        absSlider.oninput = () => {
-            const v = parseInt(absSlider.value);
-            absVal.textContent = `${v} — ${ABSTRACTION_LABELS[v]}`;
-        };
-
-        document.getElementById('add-node-submit').onclick = async () => {
-            const content = document.getElementById('an-content').value.trim();
-            if (!content) {
-                const err = document.getElementById('an-error');
-                err.textContent = 'Content is required.';
-                err.style.display = 'block';
+    document.body.appendChild(modal);
+    
+    // Get DOM elements
+    const contentInput = document.getElementById('an-content');
+    const suggestionDiv = document.getElementById('an-suggestion');
+    const explanationEl = document.getElementById('an-explanation');
+    const confidenceEl = document.getElementById('an-confidence');
+    const coordsEl = document.getElementById('an-coords');
+    const useSuggestionBtn = document.getElementById('an-use-suggestion');
+    const xInput = document.getElementById('an-x');
+    const yInput = document.getElementById('an-y');
+    const zInput = document.getElementById('an-z');
+    const popupEl = document.getElementById('an-details-popup');
+    
+    let suggestionTimeout;
+    let currentSuggestion = null;
+    
+    // Content input handler with debounce
+    contentInput.addEventListener('input', () => {
+        clearTimeout(suggestionTimeout);
+        suggestionDiv.style.display = 'none';
+        
+        suggestionTimeout = setTimeout(async () => {
+            const content = contentInput.value.trim();
+            if (content.length < 15) {
+                suggestionDiv.style.display = 'none';
                 return;
             }
-            const parent_type       = document.getElementById('an-type').value;
-            const vf                = document.getElementById('an-valid-from').value;
-            const vt                = document.getElementById('an-valid-to').value;
-            const xv                = document.getElementById('an-x').value;
-            const yv                = document.getElementById('an-y').value;
-            const zv                = document.getElementById('an-z').value;
-            const abstraction_level = parseInt(document.getElementById('an-abstraction').value);
-            const confidence_tier   = parseInt(document.getElementById('an-confidence-tier').value);
+            
+            // Show loading state
+            explanationEl.textContent = '🔍 Analyzing semantic relationships...';
+            confidenceEl.textContent = '';
+            coordsEl.textContent = 'x: — y: —';
+            useSuggestionBtn.style.opacity = '1';
+            useSuggestionBtn.style.pointerEvents = 'auto';
+            suggestionDiv.style.display = 'block';
+            
+            const parentType = document.getElementById('an-type').value;
+            const suggestion = await suggestPositionFromSimilarity(content, existingNodes, existingRelations, parentType);
+            currentSuggestion = suggestion;
 
-            const btn = document.getElementById('add-node-submit');
-            btn.textContent = 'Creating...';
-            btn.disabled = true;
+            // Show relation loading state in the panel footer area
+            const relDiv = document.getElementById('an-relations');
+            const relList = document.getElementById('an-relations-list');
+            if (relDiv && relList) {
+                relDiv.style.display = 'block';
+                relList.innerHTML = '<div style="padding:4px 2px;font-size:10px;color:#445070;">🔮 Predicting relations...</div>';
+            }
 
-            const result = await onSubmit({
-                content, parent_type,
-                valid_from: vf ? parseInt(vf) : null,
-                valid_to:   vt ? parseInt(vt) : null,
-                x: xv !== '' ? parseFloat(xv) : null,
-                y: yv !== '' ? parseFloat(yv) : null,
-                z: zv !== '' ? parseFloat(zv) : null,
-                abstraction_level,
-                confidence_tier,
-            });
+            // ── Background: Gemini relation prediction ───────────────────────────
+            (async () => {
+                try {
+                    const embedRes = await fetch('/api/embed', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ text: content }),
+                    });
+                    if (!embedRes.ok) throw new Error('embed failed');
+                    const { embedding } = await embedRes.json();
+
+                    const nodesWithEmb = existingNodes.filter(n => n.embedding?.length > 0);
+                    if (nodesWithEmb.length === 0) { if (relDiv) relDiv.style.display = 'none'; return; }
+
+                    const sims = nodesWithEmb
+                        .map(n => ({ node: n, sim: cosineSimilarity(embedding, n.embedding) }))
+                        .sort((a, b) => b.sim - a.sim);
+
+                    const candidates = [
+                        ...sims.filter(m => m.sim >= 0.55).slice(0, 5),
+                        ...sims.filter(m => m.sim >= 0.3 && m.sim < 0.55).slice(0, 2),
+                    ].filter((m, i, arr) => arr.findIndex(x => x.node.node_id === m.node.node_id) === i);
+
+                    if (candidates.length === 0) { if (relDiv) relDiv.style.display = 'none'; return; }
+
+                    const geminiRes = await fetch('/api/placement/analyze-graph', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            content,
+                            parent_type: parentType,
+                            existing_nodes: candidates.map(m => ({
+                                node_id:     m.node.node_id,
+                                content:     m.node.content || m.node.name || '',
+                                parent_type: m.node.parent_type || 'Concept',
+                                x: m.node.x || 0, y: m.node.y || 0, z: 0,
+                                embedding: [],
+                            })),
+                            existing_relations: [],
+                        }),
+                    });
+                    if (!geminiRes.ok) throw new Error('analyze-graph ' + geminiRes.status);
+                    const geminiData = await geminiRes.json();
+                    const relations = (geminiData.predicted_relations || []).slice(0, 5);
+
+                    if (!currentSuggestion) return;
+                    const accepted = new Set(relations.map((_, i) => i));
+                    currentSuggestion._pendingRels = relations;
+                    currentSuggestion._relAccepted = accepted;
+
+                    // ── If top relation is CONTRADICTS, reposition to opposite side ──
+                    const topRel = relations.slice().sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
+                    if (topRel?.rel_type === 'CONTRADICTS') {
+                        const contradictTarget = existingNodes.find(n => n.node_id === topRel.target_node_id);
+                        if (contradictTarget) {
+                            const oppPos  = placeOpposite(contradictTarget, existingNodes, 140);
+                            const finalOpp = repelFromOverlap(oppPos.x, oppPos.y, existingNodes);
+                            currentSuggestion.x = finalOpp.x;
+                            currentSuggestion.y = finalOpp.y;
+                            coordsEl.textContent = `x: ${finalOpp.x.toFixed(1)} y: ${finalOpp.y.toFixed(1)} ⚔️`;
+                            explanationEl.textContent = currentSuggestion.explanation +
+                                `
+
+⚔️ CONTRADICTS "${(contradictTarget.content||'').slice(0,40)}" — repositioned to opposing side.`;
+                        }
+                    }
+
+                    // ── Render relation toggle cards ──────────────────────────────
+                    const REL_COLOR = {
+                        CONTRADICTS:'#ff5a5a', SUPPORTS:'#00c8a0', REQUIRES:'#ffa500',
+                        TRIGGERS:'#a78bfa',    AMPLIFIES:'#34d399', DEPENDS_ON:'#60a5fa',
+                        ELABORATES:'#f9a8d4',  EXEMPLIFIES:'#fcd34d', RELATES_TO:'#445070',
+                    };
+
+                    function renderRelCards() {
+                        if (!relList) return;
+                        relList.innerHTML = relations.length === 0
+                            ? '<div style="padding:4px 2px;font-size:10px;color:#445070;">No strong relations detected.</div>'
+                            : relations.map((r, i) => {
+                                const col    = REL_COLOR[r.rel_type] || '#445070';
+                                const chk    = accepted.has(i);
+                                const target = existingNodes.find(n => n.node_id === r.target_node_id);
+                                const label  = (target?.content || target?.name || r.target_node_id || '').substring(0, 52);
+                                return `<div data-rel-idx="${i}" style="display:flex;align-items:flex-start;gap:7px;padding:7px 8px;
+                                    background:rgba(255,255,255,0.015);border:1px solid ${chk?col+'44':'#1a2030'};
+                                    border-radius:5px;cursor:pointer;">
+                                    <div style="margin-top:2px;width:12px;height:12px;border-radius:2px;flex-shrink:0;
+                                        border:1px solid ${chk?col:'#2a3550'};background:${chk?col+'33':'transparent'};
+                                        display:flex;align-items:center;justify-content:center;font-size:8px;color:${col};">${chk?'✓':''}</div>
+                                    <div style="flex:1;min-width:0;">
+                                        <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px;">
+                                            <span style="font-size:9px;font-weight:700;color:${col};letter-spacing:0.06em;">${r.rel_type}</span>
+                                            <span style="font-size:9px;color:#2a3550;">${Math.round((r.confidence??0.75)*100)}%</span>
+                                        </div>
+                                        <div style="font-size:10px;color:#c8d0e0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</div>
+                                        <div style="font-size:9px;color:#8e99b3;margin-top:2px;line-height:1.4;">${r.justification||''}</div>
+                                    </div>
+                                </div>`;
+                            }).join('');
+
+                        relList.querySelectorAll('[data-rel-idx]').forEach(el => {
+                            el.onclick = () => {
+                                const i = parseInt(el.dataset.relIdx);
+                                if (accepted.has(i)) accepted.delete(i); else accepted.add(i);
+                                renderRelCards();
+                            };
+                        });
+                    }
+
+                    renderRelCards();
+                    if (relDiv) relDiv.style.display = relations.length > 0 ? 'block' : 'none';
+
+                } catch(err) {
+                    console.warn('Relation prediction failed:', err);
+                    if (relDiv) relDiv.style.display = 'none';
+                }
+            })();
+            
+            if (suggestion && suggestion.x !== undefined) {
+                // Has position suggestion
+                explanationEl.textContent = suggestion.explanation;
+                coordsEl.textContent = `x: ${suggestion.x.toFixed(1)} y: ${suggestion.y.toFixed(1)}`;
+                
+                // Show match confidence if available
+                if (suggestion.matches && suggestion.matches.length > 0) {
+                    const avgConf = suggestion.matches.reduce((sum, m) => sum + parseInt(m.sim), 0) / suggestion.matches.length;
+                    confidenceEl.textContent = `Match quality: ${avgConf.toFixed(0)}%`;
+                } else {
+                    confidenceEl.textContent = '';
+                }
+                
+                useSuggestionBtn.onclick = () => {
+                    xInput.value = suggestion.x.toFixed(1);
+                    yInput.value = suggestion.y.toFixed(1);
+                    
+                    if (!zInput.value) {
+                        const absLevel = parseInt(document.getElementById('an-abstraction').value);
+                        zInput.value = (absLevel - 3) * 60;
+                    }
+                    
+                    suggestionDiv.style.opacity = '0.7';
+                    setTimeout(() => {
+                        suggestionDiv.style.display = 'none';
+                        suggestionDiv.style.opacity = '1';
+                    }, 500);
+                    
+                    [xInput, yInput].forEach(input => {
+                        input.style.background = 'rgba(0,200,160,0.15)';
+                        input.style.borderColor = 'var(--concept)';
+                        setTimeout(() => {
+                            input.style.background = '';
+                            input.style.borderColor = '';
+                        }, 800);
+                    });
+                    
+                    if (window.clearSuggestedPosition) window.clearSuggestedPosition();
+                };
+            } else if (suggestion && suggestion.explanation) {
+                explanationEl.textContent = suggestion.explanation;
+                coordsEl.textContent = 'x: — y: — (manual placement recommended)';
+                confidenceEl.textContent = '';
+                useSuggestionBtn.style.opacity = '0.5';
+                useSuggestionBtn.style.pointerEvents = 'none';
+            }
+        }, 800);
+    });
+    
+    // Tooltip hover handlers
+    explanationEl.addEventListener('mouseenter', (e) => {
+        if (currentSuggestion && currentSuggestion.matches && currentSuggestion.matches.length > 0) {
+            // Format the detailed match information
+            const details = currentSuggestion.matches.map((m, i) => {
+                const similarityBar = '█'.repeat(Math.floor(parseInt(m.sim) / 10)) + '░'.repeat(10 - Math.floor(parseInt(m.sim) / 10));
+                return `${m.name}\n   ${similarityBar} ${m.sim}% · ${m.type}`;
+            }).join('\n\n');
+            
+            popupEl.textContent = details;
+            popupEl.style.display = 'block';
+            
+            // Position popup near mouse
+            const rect = e.target.getBoundingClientRect();
+            popupEl.style.left = (rect.right + 20) + 'px';
+            popupEl.style.top = (rect.top - 20) + 'px';
+        }
+    });
+    
+    explanationEl.addEventListener('mousemove', (e) => {
+        // Update popup position to follow mouse
+        if (popupEl.style.display === 'block') {
+            popupEl.style.left = (e.pageX + 20) + 'px';
+            popupEl.style.top = (e.pageY - 100) + 'px';
+        }
+    });
+    
+    explanationEl.addEventListener('mouseleave', () => {
+        popupEl.style.display = 'none';
+    });
+    
+    // Modal close handlers
+    document.getElementById('add-node-close').onclick = () => {
+        if (window.clearSuggestedPosition) window.clearSuggestedPosition();
+        modal.remove();
+    };
+    
+    document.getElementById('add-node-cancel').onclick = () => {
+        if (window.clearSuggestedPosition) window.clearSuggestedPosition();
+        modal.remove();
+    };
+    
+    modal.addEventListener('click', e => { 
+        if (e.target === modal) {
+            if (window.clearSuggestedPosition) window.clearSuggestedPosition();
             modal.remove();
-            showFlash(`Node ${result.node_id} created`);
-        };
-    },
+        }
+    });
+
+    // Abstraction level slider
+    const ABSTRACTION_LABELS = ['', 'Observation', 'Evidence', 'Hypothesis', 'Principle', 'Axiom'];
+    const absSlider = document.getElementById('an-abstraction');
+    const absVal = document.getElementById('an-abstraction-val');
+    
+    absSlider.oninput = () => {
+        const v = parseInt(absSlider.value);
+        absVal.textContent = `${v} — ${ABSTRACTION_LABELS[v]}`;
+        
+        // Auto-update Z if position fields are empty
+        if (!zInput.value) {
+            zInput.placeholder = `Auto: ${(v - 3) * 60}`;
+        }
+    };
+
+    // Submit handler
+document.getElementById('add-node-submit').onclick = async () => {
+    const content = document.getElementById('an-content').value.trim();
+    if (!content) {
+        const err = document.getElementById('an-error');
+        err.textContent = 'Content is required.';
+        err.style.display = 'block';
+        return;
+    }
+    
+    const parent_type = document.getElementById('an-type').value;
+    const vf = document.getElementById('an-valid-from').value;
+    const vt = document.getElementById('an-valid-to').value;
+    const xv = document.getElementById('an-x').value;
+    const yv = document.getElementById('an-y').value;
+    const zv = document.getElementById('an-z').value;
+    const abstraction_level = parseInt(document.getElementById('an-abstraction').value);
+    const confidence_tier = parseInt(document.getElementById('an-confidence-tier').value);
+
+    const btn = document.getElementById('add-node-submit');
+    btn.textContent = 'Creating...';
+    btn.disabled = true;
+
+    // Collect accepted relation toggles
+    const acceptedRelations = (currentSuggestion?._pendingRels || [])
+        .filter((_, i) => currentSuggestion?._relAccepted?.has(i));
+    const suggestionWithRels = { ...(currentSuggestion || {}), acceptedRelations };
+
+    const result = await onSubmit({
+        content, parent_type,
+        valid_from: vf ? parseInt(vf) : null,
+        valid_to: vt ? parseInt(vt) : null,
+        x: xv !== '' ? parseFloat(xv) : (currentSuggestion?.x ?? null),
+        y: yv !== '' ? parseFloat(yv) : (currentSuggestion?.y ?? null),
+        z: zv !== '' ? parseFloat(zv) : null,
+        abstraction_level,
+        confidence_tier,
+    }, suggestionWithRels);
+    
+    if (window.clearSuggestedPosition) window.clearSuggestedPosition();
+    modal.remove();
+    showFlash(`Node ${result.node_id} created`);
+};
+ },
+
+showPlacementExplanation(node, suggestionData) {
+    // Remove any existing explanation panel
+    const existing = document.getElementById('placement-explanation');
+    if (existing) existing.remove();
+    
+    const panel = document.createElement('div');
+    panel.id = 'placement-explanation';
+    panel.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        width: 360px;
+        background: rgba(8,10,16,0.98);
+        border: 1px solid var(--concept);
+        border-radius: 10px;
+        padding: 18px;
+        z-index: 1000;
+        font-family: 'DM Mono', monospace;
+        box-shadow: 0 10px 40px rgba(0,200,160,0.15);
+        backdrop-filter: blur(8px);
+        animation: slideInRight 0.3s ease-out;
+    `;
+    
+    // Create similarity bars for matches
+    const matchDetails = suggestionData.matches ? suggestionData.matches.map(m => {
+        const barWidth = parseInt(m.sim);
+        const filledBars = Math.floor(barWidth / 10);
+        const emptyBars = 10 - filledBars;
+        const bar = '█'.repeat(filledBars) + '░'.repeat(emptyBars);
+        
+        return `
+            <div style="margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.02); border-radius: 6px;">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                    <span style="color: #c8d0e0; font-size: 11px;">${m.name}</span>
+                    <span style="color: var(--concept); font-size: 10px;">${m.sim}%</span>
+                </div>
+                <div style="color: #445070; font-family: monospace; font-size: 12px; letter-spacing: 2px;">
+                    ${bar}
+                </div>
+                <div style="color: #445070; font-size: 9px; margin-top: 2px;">${m.type}</div>
+            </div>
+        `;
+    }).join('') : '';
+    
+    panel.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+            <span style="font-size: 16px;">✨</span>
+            <span style="color: var(--concept); font-size: 11px; font-weight: 600; letter-spacing: 0.05em; flex:1;">PLACEMENT EXPLANATION</span>
+            <button id="close-explanation" style="background:none; border:none; color:#445070; cursor:pointer; font-size:14px;">✕</button>
+        </div>
+        
+        <div style="margin-bottom: 16px; padding: 10px; background: rgba(0,200,160,0.05); border-left: 3px solid var(--concept); border-radius: 4px;">
+            <div style="color: #c8d0e0; font-size: 13px; font-weight: 500; margin-bottom: 4px;">${node.content || node.name}</div>
+            <div style="color: #8e99b3; font-size: 11px; line-height: 1.6; white-space: pre-wrap;">${suggestionData.explanation}</div>
+        </div>
+        
+        ${matchDetails ? `
+            <div style="margin-top: 12px;">
+                <div style="color: #445070; font-size: 10px; letter-spacing: 0.05em; margin-bottom: 8px;">MOST SIMILAR CONCEPTS</div>
+                ${matchDetails}
+            </div>
+        ` : ''}
+        
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #1e2535; display: flex; gap: 8px; font-size: 10px; color: #445070;">
+            <span>📍 Position: ${node.x?.toFixed(1) || '?'}, ${node.y?.toFixed(1) || '?'}, ${node.z?.toFixed(1) || '?'}</span>
+        </div>
+    `;
+    
+    document.body.appendChild(panel);
+    
+    // Add animation keyframes if not present
+    if (!document.getElementById('explanation-keyframes')) {
+        const style = document.createElement('style');
+        style.id = 'explanation-keyframes';
+        style.textContent = `
+            @keyframes slideInRight {
+                from {
+                    transform: translateX(100%);
+                    opacity: 0;
+                }
+                to {
+                    transform: translateX(0);
+                    opacity: 1;
+                }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    // Close button handler
+    document.getElementById('close-explanation').onclick = () => panel.remove();
+    
+    // Auto-dismiss after 15 seconds
+    setTimeout(() => {
+        if (panel.parentNode) {
+            panel.style.animation = 'slideInRight 0.3s reverse';
+            setTimeout(() => panel.remove(), 300);
+        }
+    }, 15000);
+},
+
 
     // -------------------------
     // Edit Node Modal
@@ -694,7 +1658,6 @@ export const UI = {
             }
         };
 
-
         document.getElementById('ai-rechallenge').onclick = challenge;
         await challenge();
     },
@@ -749,6 +1712,7 @@ export const UI = {
 
             <div style="display:flex;gap:8px;margin-top:12px;">
                 <button class="ai-btn" onclick="window.dispatch('AI_CHALLENGE', '${node.id || node.node_id}')">&#x26A1; Challenge</button>
+                <button id="btn-propose-relations" class="ai-btn" style="color:#00c8a0;border-color:rgba(0,200,160,0.3);">Propose</button>
                 <button class="delete-btn" onclick="window.__confirmDelete()">Delete Node</button>
             </div>
         `;
@@ -767,14 +1731,11 @@ export const UI = {
             document.getElementById('insp-abstraction-save').onclick = async () => {
                 const level = parseInt(absSliderInsp.value);
                 const newZ  = (level - 3) * 60; // L1=-120, L2=-60, L3=0, L4=60, L5=120
-                // Only persist abstraction_level — z is derived from it on every load.
-                // Saving z as a raw world coordinate caused stale positions after refresh.
                 await fetch(`/api/nodes/${node.id}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ abstraction_level: level }),
                 });
-                // Move in live scene immediately, no full refresh needed
                 node.abstraction_level = level;
                 node.z = newZ;
                 window.dispatch('MOVE_NODE_Z', { id: node.id, z: newZ, level });
@@ -1405,9 +2366,284 @@ export const UI = {
             `).join('');
     },
 
-    // -------------------------
+    // ─────────────────────────────────────────────────────────────
+    // Discussion Node Modal
+    // Called after the user has finished picking members in selection
+    // mode. `selectedNodes` is an array of full node objects.
+    // `onSubmit(title, memberIds)` → async, returns the new node.
+    // ─────────────────────────────────────────────────────────────
+    renderDiscussionNodeModal(selectedNodes, onSubmit) {
+        const existing = document.getElementById('discussion-node-modal');
+        if (existing) existing.remove();
+
+        // Build the member chips HTML
+        const memberChips = () => selectedNodes.map((n, i) => `
+            <div id="disc-chip-${i}" style="
+                display:inline-flex; align-items:center; gap:6px;
+                background:rgba(232,80,144,0.07); border:1px solid rgba(232,80,144,0.25);
+                border-radius:6px; padding:5px 10px; font-size:11px; color:#e85090;
+                font-family:'DM Mono',monospace; margin:3px;
+            ">
+                <span style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                    title="${(n.content || n.name || '').replace(/"/g,'&quot;')}">
+                    ${(n.content || n.name || 'Unnamed').slice(0, 40)}
+                </span>
+                <button data-disc-remove="${i}" style="
+                    background:none; border:none; color:rgba(232,80,144,0.5);
+                    cursor:pointer; font-size:12px; padding:0; line-height:1;
+                    transition:color 0.15s;
+                " title="Remove from discussion">&#x2715;</button>
+            </div>
+        `).join('');
+
+        const modal = document.createElement('div');
+        modal.id = 'discussion-node-modal';
+        modal.className = 'creation-modal-overlay';
+
+        modal.innerHTML = `
+            <div class="creation-modal creation-modal--wide">
+                <div class="modal-header">
+                    <span class="modal-tag" style="color:#e85090;">NEW DISCUSSION</span>
+                    <button class="modal-close" id="disc-modal-close">&#x2715;</button>
+                </div>
+
+                <div class="modal-body">
+
+                    <!-- Title field -->
+                    <div class="field-group">
+                        <label>Discussion Title <span class="req">*</span></label>
+                        <input type="text" id="disc-title"
+                            placeholder="What is this discussion about?"
+                            style="font-size:13px;">
+                    </div>
+
+                    <!-- Description (optional context) -->
+                    <div class="field-group">
+                        <label>Context <span class="opt">(optional — frames the discussion)</span></label>
+                        <textarea id="disc-context" rows="2"
+                            placeholder="What question, tension, or problem does this discussion address?"></textarea>
+                    </div>
+
+                    <!-- Member nodes -->
+                    <div class="field-group">
+                        <label style="display:flex;align-items:center;justify-content:space-between;">
+                            <span>Member Nodes <span class="req">*</span>
+                                <span style="color:#445070;font-size:9px;margin-left:6px;">
+                                    (${selectedNodes.length} selected)
+                                </span>
+                            </span>
+                        </label>
+                        <div id="disc-member-chips" style="
+                            min-height:40px; padding:6px;
+                            background:#0c0e16; border:1px solid #1e2535; border-radius:6px;
+                            display:flex; flex-wrap:wrap; align-items:flex-start;
+                        ">
+                            ${memberChips()}
+                        </div>
+                        <div style="font-size:10px;color:#2a3048;margin-top:4px;font-family:'DM Mono',monospace;">
+                            DISCUSSES edges will be created from the discussion node to each member.
+                            Members stay in their spatial positions.
+                        </div>
+                    </div>
+
+                    <!-- Abstraction level -->
+                    <div class="field-group">
+                        <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
+                        <div class="slider-row">
+                            <input type="range" id="disc-abstraction" min="1" max="5" step="1" value="3">
+                            <span id="disc-abstraction-val" style="color:#e85090;width:90px;font-size:10px;flex-shrink:0;">
+                                3 — Hypothesis
+                            </span>
+                        </div>
+                    </div>
+
+                    <div id="disc-error" class="modal-error" style="display:none"></div>
+                </div>
+
+                <div class="modal-footer">
+                    <button class="modal-btn-cancel" id="disc-modal-cancel">Cancel</button>
+                    <button class="modal-btn-confirm" id="disc-modal-submit"
+                        style="background:rgba(232,80,144,0.08);border-color:#e85090;color:#e85090;">
+                        Create Discussion &#x2192;
+                    </button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // ── Abstraction slider ──────────────────────────────────────
+        const LEVEL_NAMES = { 1:'Observation', 2:'Evidence', 3:'Hypothesis', 4:'Principle', 5:'Axiom' };
+        const absSlider = document.getElementById('disc-abstraction');
+        const absVal    = document.getElementById('disc-abstraction-val');
+        absSlider.oninput = () => {
+            const v = absSlider.value;
+            absVal.textContent = `${v} — ${LEVEL_NAMES[v]}`;
+        };
+
+        // ── Remove member chip ──────────────────────────────────────
+        const chipsEl = document.getElementById('disc-member-chips');
+        chipsEl.addEventListener('click', e => {
+            const idx = e.target.closest('[data-disc-remove]')?.dataset.discRemove;
+            if (idx == null) return;
+            selectedNodes.splice(parseInt(idx), 1);
+            chipsEl.innerHTML = memberChips();
+            // Update count label
+            modal.querySelector('span.req + span').textContent =
+                `(${selectedNodes.length} selected)`;
+        });
+
+        // ── Close / cancel ──────────────────────────────────────────
+        const close = () => modal.remove();
+        document.getElementById('disc-modal-close').onclick  = close;
+        document.getElementById('disc-modal-cancel').onclick = close;
+        modal.addEventListener('click', e => { if (e.target === modal) close(); });
+
+        // ── Submit ──────────────────────────────────────────────────
+        document.getElementById('disc-modal-submit').onclick = async () => {
+            const title = document.getElementById('disc-title').value.trim();
+            const errEl = document.getElementById('disc-error');
+
+            if (!title) {
+                errEl.textContent = 'A discussion title is required.';
+                errEl.style.display = 'block';
+                document.getElementById('disc-title').focus();
+                return;
+            }
+            if (selectedNodes.length < 2) {
+                errEl.textContent = 'A discussion needs at least 2 member nodes.';
+                errEl.style.display = 'block';
+                return;
+            }
+            errEl.style.display = 'none';
+
+            const btn = document.getElementById('disc-modal-submit');
+            btn.textContent = 'Creating…';
+            btn.disabled = true;
+
+            try {
+                await onSubmit({
+                    title,
+                    context:           document.getElementById('disc-context').value.trim(),
+                    abstraction_level: parseInt(absSlider.value),
+                    memberIds:         selectedNodes.map(n => n.id),
+                });
+                modal.remove();
+            } catch (err) {
+                errEl.textContent = `Error: ${err.message}`;
+                errEl.style.display = 'block';
+                btn.textContent = 'Create Discussion →';
+                btn.disabled = false;
+            }
+        };
+    },
+
+    // ─────────────────────────────────────────────────────────────
+    // Discussion Selection Mode Banner
+    // Shows a persistent bottom banner while the user is picking
+    // nodes. `onConfirm(nodes)` / `onCancel()` are callbacks.
+    // ─────────────────────────────────────────────────────────────
+    showDiscussionSelectionBanner(selectedNodes, onConfirm, onCancel) {
+        const existing = document.getElementById('disc-selection-banner');
+        if (existing) existing.remove();
+
+        const banner = document.createElement('div');
+        banner.id = 'disc-selection-banner';
+        banner.style.cssText = `
+            position: fixed;
+            bottom: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            background: rgba(10,12,18,0.95);
+            border: 1px solid #e85090;
+            border-radius: 10px;
+            padding: 12px 20px;
+            font-family: 'DM Mono', monospace;
+            font-size: 11px;
+            box-shadow: 0 0 40px rgba(232,80,144,0.15);
+            backdrop-filter: blur(12px);
+            pointer-events: auto;
+        `;
+
+        const update = () => {
+            const count = selectedNodes.length;
+            banner.innerHTML = `
+                <span style="color:#e85090;letter-spacing:0.1em;font-weight:600;">
+                    DISCUSSION MODE
+                </span>
+                <span style="color:#445070;">—</span>
+                <span id="disc-sel-count" style="color:#c8d0e0;">
+                    ${count === 0
+                        ? 'Click nodes to add members'
+                        : `${count} node${count !== 1 ? 's' : ''} selected`}
+                </span>
+                ${count > 0 ? `
+                <div style="display:flex;gap:6px;flex-wrap:wrap;max-width:300px;">
+                    ${selectedNodes.slice(0,4).map(n => `
+                        <span style="
+                            background:rgba(232,80,144,0.08);
+                            border:1px solid rgba(232,80,144,0.2);
+                            border-radius:4px; padding:2px 8px;
+                            color:#e85090; font-size:10px;
+                            white-space:nowrap; overflow:hidden;
+                            text-overflow:ellipsis; max-width:120px;
+                        " title="${(n.content || n.name || '').replace(/"/g,'&quot;')}">
+                            ${(n.content || n.name || 'Node').slice(0,20)}
+                        </span>
+                    `).join('')}
+                    ${count > 4 ? `<span style="color:#445070;font-size:10px;align-self:center;">+${count-4} more</span>` : ''}
+                </div>` : ''}
+                <button id="disc-sel-confirm" style="
+                    background: rgba(232,80,144,0.1);
+                    border: 1px solid #e85090;
+                    color: #e85090;
+                    border-radius: 6px;
+                    padding: 7px 16px;
+                    cursor: ${count >= 2 ? 'pointer' : 'not-allowed'};
+                    font-family: 'DM Mono', monospace;
+                    font-size: 11px;
+                    font-weight: 600;
+                    opacity: ${count >= 2 ? '1' : '0.35'};
+                    transition: all 0.15s;
+                    white-space: nowrap;
+                ">Confirm (${count}) &#x2192;</button>
+                <button id="disc-sel-cancel" style="
+                    background: none;
+                    border: 1px solid #1e2535;
+                    color: #445070;
+                    border-radius: 6px;
+                    padding: 7px 12px;
+                    cursor: pointer;
+                    font-family: 'DM Mono', monospace;
+                    font-size: 11px;
+                    transition: all 0.15s;
+                ">&#x2715; Cancel</button>
+            `;
+
+            document.getElementById('disc-sel-confirm').onclick = () => {
+                if (selectedNodes.length >= 2) onConfirm([...selectedNodes]);
+            };
+            document.getElementById('disc-sel-cancel').onclick = () => {
+                banner.remove();
+                onCancel();
+            };
+        };
+
+        // Append first so getElementById works inside update()
+        document.body.appendChild(banner);
+        update();
+
+        // Return an updater so app.js can call it when selection changes
+        return update;
+    },
+
+    // ─────────────────────────────────────────────────────────────
     // Search
-    // -------------------------
+    // ─────────────────────────────────────────────────────────────
     setupSearch(nodes, onSelect) {
         const input   = document.getElementById('node-search');
         const results = document.getElementById('search-results');
@@ -1434,3 +2670,7 @@ export const UI = {
         };
     },
 };
+
+window.suggestPositionFromGraph = suggestPositionFromGraph;
+window.showGraphAwareExplanation = showGraphAwareExplanation;
+window.UI = UI;

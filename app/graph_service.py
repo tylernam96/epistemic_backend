@@ -12,9 +12,9 @@ VERSION_PARENT = {v: k for k, v in NODE_TYPES.items()}
 
 class GraphService:
     @staticmethod
-    def get_3d_data(limit: int = 500):
+    def get_3d_data(limit: int = 500, graph_id: str = "default"):
         with driver.session() as session:
-            return session.execute_read(GraphService._fetch_3d_data, limit)
+            return session.execute_read(GraphService._fetch_3d_data, limit, graph_id)
 
     @staticmethod
     def get_neighbors(node_id: str):
@@ -72,14 +72,23 @@ class GraphService:
         return neighbors
 
     @staticmethod
-    def _fetch_3d_data(tx, limit):
-        nodes_result = tx.run("MATCH (n) RETURN n LIMIT $limit", limit=limit)
+    def _fetch_3d_data(tx, limit, graph_id="default"):
+        nodes_result = tx.run(
+            "MATCH (n) WHERE coalesce(n.graph_id, 'default') = $graph_id RETURN n LIMIT $limit",
+            limit=limit, graph_id=graph_id
+        )
         nodes_map = {}
         for record in nodes_result:
             node = record['n']
             nodes_map[node.element_id] = _build_node(node)
 
-        rels_result = tx.run("MATCH (n)-[r]->(m) RETURN n, r, m LIMIT $limit", limit=limit)
+        rels_result = tx.run(
+            """MATCH (n)-[r]->(m)
+            WHERE coalesce(n.graph_id, 'default') = $graph_id
+              AND coalesce(m.graph_id, 'default') = $graph_id
+            RETURN n, r, m LIMIT $limit""",
+            limit=limit, graph_id=graph_id
+        )
         links = []
         for record in rels_result:
             rel = record['r']
@@ -157,6 +166,8 @@ def _build_node(node):
         "y":                 _float(props.get("y")),
         "abstraction_level": _int(props.get("abstraction_level")),
         "confidence_tier":   _int(props.get("confidence_tier")),
+        "embedding":         props.get("embedding") or [],
+        "graph_id":          props.get("graph_id", "default"),
         "props":             props,
     }
 

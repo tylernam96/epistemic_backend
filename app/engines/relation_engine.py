@@ -1,4 +1,6 @@
 from app.database import driver
+from app.graph_service import GraphService
+
 
 class RelationEngine:
     @staticmethod
@@ -47,3 +49,27 @@ class RelationEngine:
         RETURN r
         """
         # ... execute via driver ...
+    @staticmethod
+    def propose(node_id: str):
+        try:
+            neighbors = GraphService.get_neighbors(node_id)
+        except Exception:
+            neighbors = []
+
+        proposals = []
+
+        # --- Simple safe logic (won’t break anything) ---
+        for n in neighbors:
+            target_id = n.get("id") or n.get("node_id") or n.get("code")
+
+            if not target_id or target_id == node_id:
+                continue
+
+            proposals.append({
+                "target": target_id,
+                "rel_type": "RELATES_TO",
+                "confidence": 0.5,
+                "justification": "Based on shared graph neighborhood"
+            })
+
+        return proposals

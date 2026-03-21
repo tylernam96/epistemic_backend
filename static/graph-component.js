@@ -8,13 +8,14 @@ const THREE = window.THREE;
 const d3    = window.d3;
 
 const DEFAULT_TYPE_COLORS = {
-    Concept:       '#005c49',
-    Observation:   '#a65129',
-    Method:        '#6622aa',
-    Reference:     '#8c7600',
-    DraftFragment: '#5c667e',
-    Event:         '#a33865',
-    TESTNODE:      '#334466',
+    Concept:        '#005c49',
+    Observation:    '#a65129',
+    Method:         '#6622aa',
+    Reference:      '#8c7600',
+    DraftFragment:  '#5c667e',
+    Event:          '#a33865',
+    TESTNODE:       '#334466',
+    DiscussionNode: '#7a1040',   // deep rose — visually distinct from all other types
 };
 
 const DEFAULT_REL_COLORS = {
@@ -29,6 +30,7 @@ const DEFAULT_REL_COLORS = {
     REQUIRES:    '#6622aa',
     RELATES_TO:  '#8896b8',
     DEPENDS:     '#ffffff',
+    DISCUSSES:   '#b03070',   // rose — matches DiscussionNode type color
 };
 
 function loadColors(key, defaults) {
@@ -440,18 +442,39 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
     }
 
     function _addNode(node) {
-        const rawType = node.parent_type || node.node_type || 'Concept';
-        const type    = rawType.charAt(0).toUpperCase() + rawType.slice(1);
-        const color   = TYPE_COLORS[type] || '#445070';
-        const radius  = 7;
+        const rawType      = node.parent_type || node.node_type || 'Concept';
+        const type         = rawType.charAt(0).toUpperCase() + rawType.slice(1);
+        const color        = TYPE_COLORS[type] || '#445070';
+        const isDiscussion = type === 'DiscussionNode';
+
+        // DiscussionNodes: larger octahedron so they read as meta-nodes at a glance.
+        // Everything else: standard sphere.
+        const radius   = isDiscussion ? 5.95 : 5.6;
+        const geometry = isDiscussion
+            ? new THREE.OctahedronGeometry(radius)
+            : new THREE.SphereGeometry(radius, 16, 12);
+
         const group = new THREE.Group();
         group.add(new THREE.Mesh(
-            new THREE.SphereGeometry(radius, 16, 12),
+            geometry,
             new THREE.MeshBasicMaterial({ color: hexToThreeColor(color) })
         ));
+
+        // Wireframe overlay for discussion nodes — makes the diamond shape crisp
+        if (isDiscussion) {
+            group.add(new THREE.LineSegments(
+                new THREE.WireframeGeometry(geometry),
+                new THREE.LineBasicMaterial({
+                    color: hexToThreeColor('#e85090'),
+                    transparent: true,
+                    opacity: 0.45,
+                })
+            ));
+        }
+
         group.position.set(node.x, node.y, node.z);
         scene.add(group);
-        const ring = null; // rings removed — Z position encodes abstraction level
+        const ring = null;
         const rawLabel = node.name || node.content || '...';
         const label    = rawLabel.length > 19 ? rawLabel.slice(0, 19) + '…' : rawLabel;
         const sprite   = makeLabelSprite(label, color);
@@ -461,7 +484,7 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
     }
 
     function _tubeRadius(w) {
-        return 0.5 + w * 2.0;
+        return 0.325 + w * 1.3;
     }
 
     function _addLink(link) {
@@ -512,7 +535,7 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
         pGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
         const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
             color: hexToThreeColor(baseHex),
-            size: 1.5 + w * 2.5,
+            size: 0.975 + w * 1.625,
             transparent: true,
             opacity: 0.9,
             depthWrite: false,
@@ -659,6 +682,84 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
             node.z = newZ;
             _syncNode(node);
             _rebuildLinksFor(nodeId);
+        },
+
+        // Show or hide all label sprites — called by toggleLabels in app.js
+        setLabelsVisible(visible) {
+            for (const { labelSprite } of nodeMeshes.values()) {
+                labelSprite.visible = visible;
+            }
+        },
+
+        // Isolation mode: dim everything outside memberIds
+        setIsolation(memberIds) {
+            const inSet = new Set(memberIds);
+
+            for (const [nodeId, { group, labelSprite }] of nodeMeshes) {
+                const isMember = inSet.has(nodeId);
+                group.children.forEach((child, i) => {
+                    if (child.material) {
+                        child.material.transparent = true;
+                        // i===0 solid mesh, i===1 wireframe overlay (discussion nodes only)
+                        const fullOpacity = i === 0 ? 1.0 : 0.45;
+                        child.material.opacity = isMember ? fullOpacity : 0.07;
+                    }
+                });
+                labelSprite.material.opacity = isMember ? 0.9 : 0.0;
+            }
+
+            for (const { line, arrow, particles, srcId, tgtId, link } of linkMeshes.values()) {
+                const isMemberLink = inSet.has(srcId) && inSet.has(tgtId);
+                const conf  = link.confidence ?? 0.75;
+                const w     = link.weight ?? 1.0;
+                const alpha = 0.08 + conf * 0.30;
+                if (line.material) {
+                    line.material.transparent = true;
+                    line.material.opacity = isMemberLink ? alpha : 0.02;
+                }
+                if (arrow.material) {
+                    arrow.material.transparent = true;
+                    arrow.material.opacity = isMemberLink ? Math.min(alpha + 0.15, 1.0) : 0.02;
+                }
+                if (particles.material) {
+                    particles.material.transparent = true;
+                    particles.material.opacity = isMemberLink ? 0.9 : 0.0;
+                }
+            }
+
+            // Compute centroid + bounding radius for camera fly-to
+            const members = _graphData.nodes.filter(n => inSet.has(n.id));
+            if (!members.length) return { cx: 0, cy: 0, cz: 0, radius: 60 };
+            const cx = members.reduce((s, n) => s + (n.x || 0), 0) / members.length;
+            const cy = members.reduce((s, n) => s + (n.y || 0), 0) / members.length;
+            const cz = members.reduce((s, n) => s + (n.z || 0), 0) / members.length;
+            const radius = Math.max(
+                60,
+                members.reduce((m, n) => Math.max(m, Math.hypot(
+                    (n.x||0)-cx, (n.y||0)-cy, (n.z||0)-cz
+                )), 0)
+            );
+            return { cx, cy, cz, radius };
+        },
+
+        clearIsolation() {
+            for (const { group, labelSprite } of nodeMeshes.values()) {
+                group.children.forEach((child, i) => {
+                    if (child.material) {
+                        child.material.transparent = i !== 0; // wireframe stays transparent
+                        child.material.opacity = i === 0 ? 1.0 : 0.45;
+                    }
+                });
+                labelSprite.material.opacity = 0.9;
+            }
+            for (const { line, arrow, particles, link } of linkMeshes.values()) {
+                const conf  = link.confidence ?? 0.75;
+                const w     = link.weight ?? 1.0;
+                const alpha = 0.08 + conf * 0.30;
+                if (line.material)      { line.material.opacity = alpha; }
+                if (arrow.material)     { arrow.material.opacity = Math.min(alpha + 0.15, 1.0); }
+                if (particles.material) { particles.material.opacity = 0.9; }
+            }
         },
     };
 }

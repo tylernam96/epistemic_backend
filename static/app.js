@@ -6,8 +6,25 @@ const state = {
     isLinkMode: false,
     linkSource: null,
     graphData: null,
-    dirtyNodes: {}  // nodes moved by drag, pending save: { id: {x,y,z} }
+    dirtyNodes: {},  // nodes moved by drag, pending save: { id: {x,y,z} }
+    labelsVisible: true,
+    // ── Discussion node selection ──────────────────────────────────
+    isDiscussionMode: false,
+    discussionSelection: [],   // array of full node objects picked so far
+    _discussionBannerUpdate: null,  // fn returned by showDiscussionSelectionBanner
+    // ── Isolation mode ────────────────────────────────────────────
+    isIsolationMode: false,
+    isolationNodeId: null,     // id of the DiscussionNode currently isolated
 };
+
+// ── Workspace (graph_id) ──────────────────────────────────────────────────
+// Persisted in localStorage so each browser tab remembers its last workspace.
+function getGraphId() {
+    return localStorage.getItem('ee_graph_id') || 'default';
+}
+function setGraphId(id) {
+    localStorage.setItem('ee_graph_id', id);
+}
 
 // Initialize Graph
 const Graph = createGraph(
@@ -17,7 +34,7 @@ const Graph = createGraph(
     (node) => handleNodeDrag(node)
 );
 window.__graph = Graph; // debug access
-
+window.__state = state;
 // -------------------------
 // Fly To Node
 // -------------------------
@@ -71,6 +88,18 @@ async function handleNodeClick(node) {
         n.id === node.id || n.node_id === node.node_id || n.node_id === node.code
     ) || node;
 
+    // ── DISCUSSION MODE: accumulate members one click at a time ───
+    if (state.isDiscussionMode) {
+        const alreadyIdx = state.discussionSelection.findIndex(n => n.id === fullNode.id);
+        if (alreadyIdx !== -1) {
+            state.discussionSelection.splice(alreadyIdx, 1);
+        } else {
+            state.discussionSelection.push(fullNode);
+        }
+        if (state._discussionBannerUpdate) state._discussionBannerUpdate();
+        return;
+    }
+
     // --- LINK MODE: two-click selection ---
     if (state.isLinkMode) {
         if (!state.linkSource) {
@@ -99,6 +128,13 @@ async function handleNodeClick(node) {
     state.selectedNode = fullNode;
     flyToNode(fullNode);
 
+    // ── If this is a DiscussionNode, enter isolation mode ────────────
+    const nodeType = fullNode.parent_type || fullNode.node_type || '';
+    if (nodeType === 'DiscussionNode') {
+        enterIsolationMode(fullNode);
+        return;
+    }
+
     const fetchId = fullNode.id || fullNode.node_id || fullNode.code;
     const response = await fetch(`/graph/node/${fetchId}/neighbors`);
     const neighbors = await response.json();
@@ -109,6 +145,74 @@ async function handleNodeClick(node) {
         ) || neighborStub;
         handleNodeClick(fullNeighbor);
     });
+        setTimeout(() => {
+        const btn = document.getElementById('btn-propose-relations');
+        if (!btn) return;
+
+        btn.onclick = async () => {
+            try {
+                btn.innerText = "Thinking...";
+                btn.style.opacity = 0.6;
+
+                const res = await fetch('/api/relations/propose', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ node_id: fullNode.id || fullNode.node_id })
+                });
+
+                const data = await res.json();
+
+                // Clear old suggestions
+                if (window.clearSuggestionVectors) {
+                    window.clearSuggestionVectors();
+                }
+
+                // Draw new ones
+                if (window.drawSuggestionVectors) {
+                    window.drawSuggestionVectors(
+                        window.graphScene || window.scene,
+                        fullNode,
+                        data.proposals
+                    );
+                }
+
+// Remove old proposal list if exists
+document.getElementById('proposal-list')?.remove();
+
+// Create list container
+const list = document.createElement('div');
+list.id = 'proposal-list';
+list.style.marginTop = '12px';
+
+// Populate proposals
+list.innerHTML = data.proposals.map(p => `
+    <div class="neighbor-card" style="border-color:rgba(0,200,160,0.3);">
+        <div style="font-size:10px;color:#00c8a0;font-weight:600;">
+            ${p.rel_type} → ${p.target}
+        </div>
+        <div style="font-size:11px;color:#8e99b3;margin-top:4px;">
+            ${p.justification || ''}
+        </div>
+        <div style="font-size:10px;color:#445070;margin-top:4px;">
+            confidence: ${(p.confidence * 100).toFixed(0)}%
+        </div>
+    </div>
+`).join('');
+
+// Append to inspector
+document.getElementById('node-inspector').appendChild(list);
+
+// Update button label
+btn.innerText = `✨ ${data.proposals.length}`;
+
+            } catch (err) {
+                console.error(err);
+                btn.innerText = "Error";
+            } finally {
+                btn.style.opacity = 1;
+            }
+        };
+    }, 0);
 }
 
 function handleLinkClick(link) {
@@ -135,7 +239,7 @@ function handleLinkClick(link) {
 // Refresh Graph Data
 // -------------------------
 async function refreshGraph() {
-    const res = await fetch('/graph/3d-json');
+    const res = await fetch(`/graph/3d-json?graph_id=${encodeURIComponent(getGraphId())}`);
     const data = await res.json();
 
     // Assign Z for HAS_VERSION chains first
@@ -166,6 +270,11 @@ async function refreshGraph() {
 
     state.graphData = data;
     state.dirtyNodes = {};
+
+    // If we were in isolation mode, the graph just re-rendered so clear it
+    if (state.isIsolationMode) {
+        exitIsolationMode();
+    }
 
     // Reset save button
     const btn = document.getElementById('btn-save-positions');
@@ -326,18 +435,27 @@ window.dispatch = async (action, payload) => {
         refreshGraph();
     }
 
-    if (action === 'ADD_NODE') {
-        UI.renderAddNodeModal(async (data) => {
-            const res = await fetch('/api/nodes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await res.json();
-            refreshGraph();
-            return result;
+  if (action === 'ADD_NODE') {
+    UI.renderAddNodeModal(async (data, suggestionData) => {
+        const res = await fetch('/api/nodes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...data, graph_id: getGraphId() })
         });
-    }
+        const result = await res.json();
+
+        // After node is created, show placement explanation if we had a suggestion
+        if (suggestionData && suggestionData.explanation) {
+            setTimeout(() => {
+                UI.showPlacementExplanation(result, suggestionData);
+            }, 500);
+        }
+
+        refreshGraph();
+        return result;
+    }, state.graphData?.nodes || [],
+       state.graphData?.links || []);
+}
 
     if (action === 'AI_CHALLENGE') {
         const node = (state.graphData?.nodes || []).find(n =>
@@ -483,6 +601,80 @@ window.dispatch = async (action, payload) => {
         });
     }
 
+    // ── Discussion Node ────────────────────────────────────────────────────
+    if (action === 'CREATE_DISCUSSION_NODE') {
+        // If already in discussion mode, cancel it first
+        if (state.isDiscussionMode) {
+            window.dispatch('EXIT_DISCUSSION_MODE');
+            return;
+        }
+
+        state.isDiscussionMode = true;
+        state.discussionSelection = [];
+
+        // Mark the toolbar button as active
+        const btn = document.getElementById('btn-discussion-mode');
+        if (btn) btn.classList.add('active');
+
+        // Show the banner and hold on to the update fn
+        state._discussionBannerUpdate = UI.showDiscussionSelectionBanner(
+            state.discussionSelection,
+
+            // onConfirm: user clicked "Confirm (N) →"
+            (selectedNodes) => {
+                // Exit selection mode immediately so clicks go back to normal
+                state.isDiscussionMode = false;
+                state.discussionSelection = [];
+                document.getElementById('disc-selection-banner')?.remove();
+                const btn = document.getElementById('btn-discussion-mode');
+                if (btn) btn.classList.remove('active');
+
+                // Open the naming modal
+                UI.renderDiscussionNodeModal(selectedNodes, async ({ title, context, abstraction_level, memberIds }) => {
+                    // 1. Create the discussion node
+                    const res = await fetch('/api/discussion-nodes', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            title,
+                            context,
+                            abstraction_level,
+                            member_ids: memberIds,
+                            graph_id: getGraphId(),
+                        }),
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        throw new Error(err.detail || `HTTP ${res.status}`);
+                    }
+
+                    await refreshGraph();
+
+                    // Show success flash
+                    showFlash(`Discussion "${title}" created with ${memberIds.length} members`);
+                });
+            },
+
+            // onCancel
+            () => {
+                window.dispatch('EXIT_DISCUSSION_MODE');
+            }
+        );
+    }
+
+    if (action === 'EXIT_ISOLATION') {
+        exitIsolationMode();
+    }
+
+    if (action === 'EXIT_DISCUSSION_MODE') {
+        state.isDiscussionMode = false;
+        state.discussionSelection = [];
+        state._discussionBannerUpdate = null;
+        document.getElementById('disc-selection-banner')?.remove();
+        const btn = document.getElementById('btn-discussion-mode');
+        if (btn) btn.classList.remove('active');
+    }
+
     if (action === 'SETTINGS') {
         UI.renderSettingsPanel(() => refreshGraph());
     }
@@ -564,6 +756,101 @@ window.dispatch = async (action, payload) => {
     }
 };
 
+// ── Isolation mode ───────────────────────────────────────────────────────────
+// Dims all non-member nodes and flies the camera to the cluster.
+// Called when the user clicks a DiscussionNode.
+async function enterIsolationMode(discussionNode) {
+    // Fetch the member list from the discussion node's neighbors
+    const fetchId = discussionNode.id || discussionNode.node_id;
+    const neighbors = await fetch(`/graph/node/${fetchId}/neighbors`).then(r => r.json());
+
+    // Members are nodes connected via a DISCUSSES edge
+    const memberIds = neighbors
+        .filter(nb => (nb.rel_type || '').toUpperCase() === 'DISCUSSES')
+        .map(nb => {
+            // Resolve neighbor element-id from graphData
+            const found = (state.graphData?.nodes || []).find(n => n.node_id === nb.code);
+            return found?.id || nb.id;
+        })
+        .filter(Boolean);
+
+    // Also include the discussion node itself in the lit set
+    memberIds.push(discussionNode.id);
+
+    state.isIsolationMode = true;
+    state.isolationNodeId  = discussionNode.id;
+
+    // Dim scene
+    const bounds = Graph.setIsolation(memberIds);
+
+    // Fly camera to cluster bounding box
+    const dist = bounds.radius * 2.8 + 80;
+    Graph.cameraPosition(
+        { x: bounds.cx, y: bounds.cy, z: bounds.cz + dist },
+        { x: bounds.cx, y: bounds.cy, z: bounds.cz },
+        1800
+    );
+
+    // Show the exit button + discussion label
+    showIsolationOverlay(discussionNode.content || discussionNode.name || 'Discussion');
+}
+
+function exitIsolationMode() {
+    if (!state.isIsolationMode) return;
+    state.isIsolationMode = false;
+    state.isolationNodeId  = null;
+    Graph.clearIsolation();
+    document.getElementById('isolation-overlay')?.remove();
+}
+
+function showIsolationOverlay(title) {
+    document.getElementById('isolation-overlay')?.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'isolation-overlay';
+    overlay.innerHTML = `
+        <div style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: rgba(10,12,18,0.92);
+            border: 1px solid #b03070;
+            border-radius: 8px;
+            padding: 10px 18px;
+            font-family: 'DM Mono', monospace;
+            font-size: 11px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 0 30px rgba(176,48,112,0.2);
+            pointer-events: auto;
+        ">
+            <span style="color:#b03070;letter-spacing:0.1em;font-weight:600;">DISCUSSION</span>
+            <span style="color:#445070;">—</span>
+            <span style="color:#c8d0e0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                title="${title.replace(/"/g, '&quot;')}">${title}</span>
+            <button id="btn-exit-isolation" style="
+                background: rgba(176,48,112,0.1);
+                border: 1px solid #b03070;
+                color: #b03070;
+                border-radius: 5px;
+                padding: 5px 12px;
+                cursor: pointer;
+                font-family: 'DM Mono', monospace;
+                font-size: 11px;
+                letter-spacing: 0.05em;
+                transition: all 0.15s;
+                white-space: nowrap;
+            ">✕ Exit</button>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('btn-exit-isolation').onclick = exitIsolationMode;
+}
+
 function showFlash(msg) {
     const f = document.createElement('div');
     f.className = 'success-flash';
@@ -572,5 +859,139 @@ function showFlash(msg) {
     setTimeout(() => f.remove(), 2500);
 }
 
-// Initial load
+// ── Workspace switcher ───────────────────────────────────────────────────
+async function initWorkspaceSwitcher() {
+    // Only ever render one instance
+    if (document.getElementById('workspace-switcher')) return;
+
+    // Fetch workspaces from DB, but always include the current one even if
+    // it has no nodes yet (e.g. brand-new workspace before first node is added)
+    let graphs = [];
+    try {
+        const r = await fetch('/api/graphs');
+        const d = await r.json();
+        graphs = d.graphs || [];
+    } catch(e) { /* ignore */ }
+
+    const current = getGraphId();
+    // Ensure current workspace appears even if DB doesn't know it yet
+    if (!graphs.includes(current)) graphs.unshift(current);
+    if (!graphs.includes('default')) graphs.unshift('default');
+    // Deduplicate preserving order
+    graphs = [...new Set(graphs)];
+
+    const wrap = document.createElement('div');
+    wrap.id = 'workspace-switcher';
+    wrap.style.cssText = `
+        display:inline-flex; align-items:center; gap:6px;
+        font-family:'DM Mono',monospace; font-size:11px;
+    `;
+
+    const renderSelect = (list, active) => list
+        .map(g => `<option value="${g}" ${g===active?'selected':''}>${g}</option>`)
+        .join('') + '<option value="__new__">+ New workspace…</option>';
+
+    wrap.innerHTML = `
+        <span style="color:#445070;letter-spacing:0.06em;">WORKSPACE</span>
+        <select id="ws-select" style="
+            background:#0a0c14; border:1px solid #1e2535; color:#c8d0e0;
+            border-radius:5px; padding:4px 8px; font-family:'DM Mono',monospace;
+            font-size:11px; cursor:pointer; outline:none;">
+            ${renderSelect(graphs, current)}
+        </select>
+    `;
+
+    // Insert before the first button in the toolbar
+    const firstBtn = document.querySelector('button');
+    if (firstBtn) firstBtn.parentElement.insertBefore(wrap, firstBtn);
+    else document.body.prepend(wrap);
+
+    document.getElementById('ws-select').onchange = async (e) => {
+        let val = e.target.value;
+
+        if (val === '__new__') {
+            // Reset select back to current while the prompt is open
+            e.target.value = current;
+            const raw = prompt('New workspace name (letters, numbers, hyphens):');
+            if (!raw || !raw.trim()) return;
+            val = raw.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+            if (!val) return;
+
+            // Add to in-memory list and re-render options so it appears immediately
+            if (!graphs.includes(val)) graphs.push(val);
+            e.target.innerHTML = renderSelect(graphs, val);
+        }
+
+        // Save and switch — don't rebuild the entire switcher, just update state
+        setGraphId(val);
+        await refreshGraph();
+
+        // Update the selected option to match new workspace
+        const sel = document.getElementById('ws-select');
+        if (sel) {
+            if (!graphs.includes(val)) {
+                graphs.push(val);
+                sel.innerHTML = renderSelect(graphs, val);
+            } else {
+                sel.value = val;
+            }
+        }
+    };
+}
+
+// ── Label toggle button ───────────────────────────────────────────────────
+window.toggleLabels = () => {
+    state.labelsVisible = !state.labelsVisible;
+    const btn = document.getElementById('btn-toggle-labels');
+    const on  = state.labelsVisible;
+    Graph.setLabelsVisible(on);
+    if (btn) {
+        btn.textContent = on ? '🏷 Labels' : '🏷 Labels (off)';
+        btn.classList.toggle('active', !on);
+    }
+};
+
+function injectLabelToggleBtn() {
+    if (document.getElementById('btn-toggle-labels')) return;
+    const saveBtn = document.getElementById('btn-save-positions');
+    if (!saveBtn) return;
+    const btn = document.createElement('button');
+    btn.id          = 'btn-toggle-labels';
+    btn.textContent = '🏷 Labels';
+    btn.title       = 'Toggle node labels — hover still shows label';
+    btn.className   = saveBtn.className;
+    btn.onclick     = () => window.toggleLabels();
+    saveBtn.parentElement.insertBefore(btn, saveBtn.nextSibling);
+}
+
+function injectDiscussionBtn() {
+    if (document.getElementById('btn-discussion-mode')) return;
+    const saveBtn = document.getElementById('btn-save-positions');
+    if (!saveBtn) return;
+    const btn = document.createElement('button');
+    btn.id          = 'btn-discussion-mode';
+    btn.textContent = '⬡ Discussion';
+    btn.title       = 'Create a Discussion Node — click nodes to select members';
+    btn.className   = saveBtn.className;   // inherits action-btn styles
+    btn.onclick     = () => window.dispatch('CREATE_DISCUSSION_NODE');
+    // Insert after the label toggle button (or after saveBtn if label btn not present)
+    const anchor = document.getElementById('btn-toggle-labels') || saveBtn;
+    anchor.parentElement.insertBefore(btn, anchor.nextSibling);
+}
+
+// Initial load — run once after the DOM is ready
+// (module scripts execute after HTML is parsed, so DOMContentLoaded
+//  may have already fired; we call directly and also register as fallback)
+function _initUI() {
+    injectLabelToggleBtn();
+    injectDiscussionBtn();
+    initWorkspaceSwitcher();
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initUI);
+} else {
+    _initUI();
+}
+
 refreshGraph();
