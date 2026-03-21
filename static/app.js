@@ -1,5 +1,5 @@
 import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
-import { UI } from './ui-components.js';
+import { UI } from './ui.js';
 
 const state = {
     selectedNode: null,
