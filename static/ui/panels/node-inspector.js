@@ -1,4 +1,5 @@
 import { resolveRelColor } from '../utils/colors.js';
+import { getTimeLayersForNode, openTimeLayerPanel } from '../hud/drift-log.js';
 import { showFlash } from '../utils/flash.js';
 
 export function renderNodeInspector(node, neighbors, onNodeClick) {
@@ -19,14 +20,43 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
             </div>
             <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
                 <div style="font-size:10px;color:#445070;font-family:'DM Mono',monospace;letter-spacing:0.08em;margin-bottom:6px;">
-                    ABSTRACTION — <span style="color:${(node.abstraction_level||3) >= 4 ? '#ffa500' : (node.abstraction_level||3) <= 2 ? '#4488ff' : '#8896b8'}">L${node.abstraction_level||3} ${{1:'Observation',2:'Evidence',3:'Hypothesis',4:'Principle',5:'Axiom'}[node.abstraction_level||3]}</span>
+                    EPOCH — <span style="color:var(--concept);">${node.epoch ?? node.valid_from ?? '—'}</span>
+                    <span style="color:#2a3048;margin-left:6px;">Time position on Z axis</span>
                 </div>
                 <div style="display:flex;align-items:center;gap:8px;">
-                    <input type="range" id="insp-abstraction" min="1" max="5" step="1" value="${node.abstraction_level||3}" style="flex:1;accent-color:var(--concept);cursor:pointer;">
-                    <span id="insp-abstraction-val" style="font-size:10px;color:var(--concept);width:14px;text-align:right;font-family:'DM Mono',monospace;">${node.abstraction_level||3}</span>
-                    <button id="insp-abstraction-save" style="background:rgba(0,200,160,0.08);border:1px solid rgba(0,200,160,0.3);color:var(--concept);border-radius:4px;padding:3px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;white-space:nowrap;">Save Z</button>
+                    <input type="number" id="insp-epoch" step="1"
+                        placeholder="e.g. 2019"
+                        value="${node.epoch ?? node.valid_from ?? ''}"
+                        style="flex:1;background:#0c0e16;border:1px solid #1e2535;border-radius:5px;color:#c8d0e0;font-family:'DM Mono',monospace;font-size:12px;padding:5px 8px;">
+                    <button id="insp-epoch-save" style="background:rgba(0,200,160,0.08);border:1px solid rgba(0,200,160,0.3);color:var(--concept);border-radius:4px;padding:5px 10px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;white-space:nowrap;">Save</button>
                 </div>
             </div>
+        </div>
+
+        <div id="insp-supplement" style="margin:0 0 12px;display:none;">
+            <div style="font-size:9px;letter-spacing:0.1em;color:#34d399;
+                margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+                <span>SUPPLEMENT</span>
+                <span style="color:#1e2535;">— crystallized from drift record</span>
+            </div>
+            <div id="insp-supplement-preview" style="font-size:11px;color:#445070;
+                line-height:1.7;padding:8px 10px;background:rgba(52,211,153,0.03);
+                border:1px solid rgba(52,211,153,0.12);border-radius:5px;
+                white-space:pre-wrap;"></div>
+            <button id="insp-supplement-expand" style="margin-top:6px;
+                background:transparent;border:1px solid rgba(52,211,153,0.15);
+                color:#34d399;border-radius:4px;padding:4px 10px;
+                font-family:'DM Mono',monospace;font-size:10px;cursor:pointer;">
+                See raw flow ↓
+            </button>
+        </div>
+
+        <div id="insp-supplement-full" style="display:none;margin:0 0 12px;
+            padding:10px 12px;background:rgba(52,211,153,0.02);
+            border:1px solid rgba(52,211,153,0.1);border-radius:5px;">
+            <div style="font-size:9px;color:#34d399;margin-bottom:8px;">TAM DRIFT RECORD</div>
+            <div id="insp-supplement-full-text" style="font-size:11px;color:#445070;
+                line-height:1.8;white-space:pre-wrap;"></div>
         </div>
 
         <div class="neighbor-list">
@@ -45,30 +75,43 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
                     </div>`).join('')}
         </div>
 
-        <div style="display:flex;gap:8px;margin-top:12px;">
+        <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;">
             <button class="ai-btn" onclick="window.dispatch('AI_CHALLENGE', '${node.id || node.node_id}')">&#x26A1; Challenge</button>
             <button id="btn-propose-relations" class="ai-btn" style="color:#00c8a0;border-color:rgba(0,200,160,0.3);">Propose</button>
+            <button id="btn-time-layers" class="ai-btn" style="color:#34d399;border-color:rgba(52,211,153,0.3);display:none;">◈ Layers</button>
             <button class="delete-btn" onclick="window.__confirmDelete()">Delete Node</button>
         </div>`;
 
     el.style.display = 'block';
 
-    const absSlider = document.getElementById('insp-abstraction');
-    const absVal    = document.getElementById('insp-abstraction-val');
-    if (absSlider) {
-        absSlider.oninput = () => { absVal.textContent = absSlider.value; };
-        document.getElementById('insp-abstraction-save').onclick = async () => {
-            const level = parseInt(absSlider.value);
-            const newZ  = (level - 3) * 60;
+    // Time layers — Proust button
+    const { layers } = getTimeLayersForNode(node.id || node.node_id);
+    const timeBtn = document.getElementById('btn-time-layers');
+    if (timeBtn && layers.length > 0) {
+        timeBtn.style.display = 'inline-flex';
+        timeBtn.onclick = () => {
+            openTimeLayerPanel(node, () => {
+                // Refresh inspector after comment added
+            });
+        };
+    }
+
+    const epochInput = document.getElementById('insp-epoch');
+    const epochSave  = document.getElementById('insp-epoch-save');
+    if (epochInput && epochSave) {
+        epochSave.onclick = async () => {
+            const epochVal = epochInput.value.trim();
+            const epoch    = epochVal !== '' ? parseInt(epochVal) : null;
+            const newZ     = epoch != null ? epoch * 80 : 0;
             await fetch(`/api/nodes/${node.id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ abstraction_level: level }),
+                body: JSON.stringify({ epoch, z: newZ }),
             });
-            node.abstraction_level = level;
+            node.epoch = epoch;
             node.z = newZ;
-            window.dispatch('MOVE_NODE_Z', { id: node.id, z: newZ, level });
-            showFlash(`L${level} → Z ${newZ > 0 ? '+' : ''}${newZ}`);
+            window.dispatch('MOVE_NODE_Z', { id: node.id, z: newZ, epoch });
+            showFlash(epoch != null ? `Epoch ${epoch} → Z ${newZ}` : 'Epoch cleared → Z 0');
         };
     }
 
@@ -105,12 +148,23 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
     };
 
     window.__editNode = () => {
-        window.UI.renderEditNodeModal(node, async (updates) => {
-            await fetch(`/api/nodes/${node.id || node.node_id}`, {
+        // Always pull the latest node from graphData so subnodes are current
+        const nodeId = node.id || node.node_id;
+        const freshNode = (window.__state?.graphData?.nodes || []).find(
+            n => n.id === nodeId || n.node_id === nodeId
+        ) || node;
+
+        window.UI.renderEditNodeModal(freshNode, async (updates) => {
+            await fetch(`/api/nodes/${nodeId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(updates),
             });
+            // Patch the local closure so re-opening edit before refresh shows new subnodes
+            if (updates.subnodes !== undefined) {
+                node.subnodes = updates.subnodes;
+                freshNode.subnodes = updates.subnodes;
+            }
             window.dispatch('REFRESH');
         });
     };

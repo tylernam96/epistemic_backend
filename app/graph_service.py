@@ -11,6 +11,43 @@ NODE_TYPES = {
 VERSION_PARENT = {v: k for k, v in NODE_TYPES.items()}
 
 class GraphService:
+
+    @staticmethod
+    def save_subnodes(node_id: str, subnodes: list):
+        """Replace all HAS_SUBNODE relationships for a node atomically."""
+        with driver.session() as session:
+            session.execute_write(GraphService._write_subnodes, node_id, subnodes)
+
+    @staticmethod
+    def _write_subnodes(tx, node_id: str, subnodes: list):
+        # Delete all existing subnodes
+        tx.run("""
+            MATCH (n)-[r:HAS_SUBNODE]->(s)
+            WHERE elementId(n) = $node_id
+            DETACH DELETE s
+        """, node_id=node_id)
+
+        # Re-create from the submitted list
+        for sub in subnodes:
+            title = (sub.get("title") or "").strip()
+            description = (sub.get("description") or "").strip()
+            if not title and not description:
+                continue
+            tx.run("""
+                MATCH (n) WHERE elementId(n) = $node_id
+                CREATE (n)-[:HAS_SUBNODE {strength: $strength}]->(s:Subnode {
+                    title:       $title,
+                    name:        $title,
+                    description: $description,
+                    content:     $description,
+                    strength:    $strength
+                })
+            """,
+            node_id=node_id,
+            title=title,
+            description=description,
+            strength=int(sub.get("strength") or 50))
+
     @staticmethod
     def get_3d_data(limit: int = 500, graph_id: str = "default"):
         with driver.session() as session:
@@ -73,28 +110,56 @@ class GraphService:
 
     @staticmethod
     def _fetch_3d_data(tx, limit, graph_id="default"):
-        nodes_result = tx.run(
-            "MATCH (n) WHERE coalesce(n.graph_id, 'default') = $graph_id RETURN n LIMIT $limit",
-            limit=limit, graph_id=graph_id
-        )
+        # Fetch all nodes
+        nodes_result = tx.run("""
+            MATCH (n)
+            WHERE coalesce(n.graph_id, 'default') = $graph_id
+             AND NOT coalesce(n.is_subnode, false)
+            RETURN n
+            LIMIT $limit
+        """, limit=limit, graph_id=graph_id)
+
         nodes_map = {}
         for record in nodes_result:
             node = record['n']
-            nodes_map[node.element_id] = _build_node(node)
+            node_id = node.element_id
+            nodes_map[node_id] = _build_node(node, [])
 
-        rels_result = tx.run(
-            """MATCH (n)-[r]->(m)
+        # Fetch subnodes and attach to parents
+        subnodes_result = tx.run("""
+            MATCH (parent)-[r:HAS_SUBNODE]->(s)
+            WHERE coalesce(parent.graph_id, 'default') = $graph_id
+            RETURN elementId(parent) AS parent_id,
+                   coalesce(s.title, s.name) AS title,
+                   coalesce(s.description, s.content) AS description,
+                   coalesce(s.strength, r.strength, 50) AS strength
+        """, graph_id=graph_id)
+
+        for record in subnodes_result:
+            parent_id = record["parent_id"]
+            if parent_id in nodes_map:
+                if "subnodes" not in nodes_map[parent_id]:
+                    nodes_map[parent_id]["subnodes"] = []
+                nodes_map[parent_id]["subnodes"].append({
+                    "title":       record["title"],
+                    "description": record["description"],
+                    "strength":    record["strength"] or 50,
+                })
+
+        # Fetch relationships
+        rels_result = tx.run("""
+            MATCH (n)-[r]->(m)
             WHERE coalesce(n.graph_id, 'default') = $graph_id
               AND coalesce(m.graph_id, 'default') = $graph_id
-            RETURN n, r, m LIMIT $limit""",
-            limit=limit, graph_id=graph_id
-        )
+            AND NOT coalesce(n.is_subnode, false)
+            AND NOT coalesce(m.is_subnode, false)            RETURN n, r, m LIMIT $limit
+        """, limit=limit, graph_id=graph_id)
+
         links = []
         for record in rels_result:
             rel = record['r']
             rel_props = dict(rel)
             raw_type = rel_props.get("relation_type") or rel.type
-
             links.append({
                 "id":            rel.element_id,
                 "source":        record['n'].element_id,
@@ -112,7 +177,7 @@ class GraphService:
 
         return {
             "nodes": list(nodes_map.values()),
-            "links": links
+            "links": links,
         }
 
 
@@ -125,7 +190,7 @@ def _resolve_type(labels):
     return "Concept", False
 
 
-def _build_node(node):
+def _build_node(node, subnodes=None):
     props = dict(node)
     labels = list(node.labels)
     node_type, is_version = _resolve_type(labels)
@@ -159,9 +224,6 @@ def _build_node(node):
         "is_version":        is_version,
         "valid_from":        _coerce_epoch(props.get("valid_from")),
         "valid_to":          _coerce_epoch(props.get("valid_to")),
-        # z is intentionally NOT returned — the frontend derives it from
-        # abstraction_level via zFromAbstractionLevel(). Returning the raw
-        # DB z caused stale values (e.g. z=1) to override the computed position.
         "x":                 _float(props.get("x")),
         "y":                 _float(props.get("y")),
         "abstraction_level": _int(props.get("abstraction_level")),
@@ -169,6 +231,9 @@ def _build_node(node):
         "embedding":         props.get("embedding") or [],
         "graph_id":          props.get("graph_id", "default"),
         "props":             props,
+        "subnodes":          [],
+        "title":             props.get("title", ""),
+        "pinned":            props.get("pinned", False),
     }
 
 

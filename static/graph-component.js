@@ -19,6 +19,7 @@ const DEFAULT_TYPE_COLORS = {
 };
 
 const DEFAULT_REL_COLORS = {
+    // Logical katman
     SUPPORT:     '#00c8a0',
     SUPPORTS:    '#00c8a0',
     CONTRADICT:  '#ff5a5a',
@@ -30,7 +31,19 @@ const DEFAULT_REL_COLORS = {
     REQUIRES:    '#6622aa',
     RELATES_TO:  '#8896b8',
     DEPENDS:     '#ffffff',
-    DISCUSSES:   '#b03070',   // rose — matches DiscussionNode type color
+    DISCUSSES:   '#b03070',
+    // Dynamic katman — Deleuze-Guattari / Derrida
+    FRICTION:          '#e85090',
+    DETERRITORIALIZES: '#a78bfa',
+    RETERRITORIALIZES: '#818cf8',
+    OPENS_INTO:        '#c084fc',
+    SEDIMENTS_INTO:    '#60a5fa',
+    HAUNTS:            '#6366f1',
+    CONTAMINATES:      '#f59e0b',
+    SUPPLEMENTS:       '#34d399',
+    RESONATES_WITH:    '#00c8a0',
+    INTENSIFIES:       '#fbbf24',
+    SUSPENDS:          '#94a3b8',
 };
 
 function loadColors(key, defaults) {
@@ -110,6 +123,16 @@ export function zFromAbstractionLevel(level) {
     return (level - 3) * 60;
 }
 
+// Z ekseni = ZAMAN
+// Year format (>1900): (year - 2000) * 40  →  2000=0, 2010=400, 2020=800
+// Period format (small number): period * 80
+export function zFromEpoch(epoch) {
+    if (epoch == null) return null;
+    const e = Number(epoch);
+    if (isNaN(e)) return null;
+    return e > 1900 ? (e - 2000) * 40 : e * 80;
+}
+
 export function randomOnSphere(radius = 200) {
     const theta = 2 * Math.PI * Math.random();
     const phi   = Math.acos(2 * Math.random() - 1);
@@ -122,6 +145,17 @@ export function randomOnSphere(radius = 200) {
 
 export function hexToRgb(hex) {
     return `${parseInt(hex.slice(1,3),16)},${parseInt(hex.slice(3,5),16)},${parseInt(hex.slice(5,7),16)}`;
+}
+
+// Adjust color brightness (for abstraction level)
+function _tintColor(hex, mult) {
+    if (!hex || hex.length < 7) return hex;
+    try {
+        const r = Math.round(parseInt(hex.slice(1,3),16) * mult);
+        const g = Math.round(parseInt(hex.slice(3,5),16) * mult);
+        const b = Math.round(parseInt(hex.slice(5,7),16) * mult);
+        return '#' + [r,g,b].map(v => Math.min(255,v).toString(16).padStart(2,'0')).join('');
+    } catch { return hex; }
 }
 
 function hexToThreeColor(hex) {
@@ -200,10 +234,18 @@ function buildCurvePoints(srcNode, tgtNode, link) {
     const start = new THREE.Vector3(srcNode.x, srcNode.y, srcNode.z);
     const end   = new THREE.Vector3(tgtNode.x, tgtNode.y, tgtNode.z);
     if (isVersion) return [start, end];
+
+    // Layer-based curvature:
+    // dynamic relations more curved — implies movement and transformation
+    // uncertain relations slightly curved
+    // logical straight
+    const layer    = link.layer || 'logical';
+    const arcMult  = layer === 'dynamic' ? 0.32 : layer === 'uncertain' ? 0.18 : 0.15;
+
     const mid  = start.clone().lerp(end, 0.5);
     const dir  = end.clone().sub(start);
     const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize();
-    const arc  = Math.min(dir.length() * 0.15, 30);
+    const arc  = Math.min(dir.length() * arcMult, layer === 'dynamic' ? 55 : 30);
     mid.addScaledVector(perp, arc);
     return new THREE.QuadraticBezierCurve3(start, mid, end).getPoints(20);
 }
@@ -444,12 +486,20 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
     function _addNode(node) {
         const rawType      = node.parent_type || node.node_type || 'Concept';
         const type         = rawType.charAt(0).toUpperCase() + rawType.slice(1);
-        const color        = TYPE_COLORS[type] || '#445070';
+        const baseColor    = TYPE_COLORS[type] || '#445070';
         const isDiscussion = type === 'DiscussionNode';
+
+        // Abstraction level → color tint (no longer Z, now encoded as color)
+        // L1=Observation: daha soluk, L5=Axiom: daha parlak
+        const absLevel = node.abstraction_level ?? 3;
+        const brightnessMult = 0.6 + (absLevel / 5) * 0.4; // range 0.68 – 1.0
+        const color = _tintColor(baseColor, brightnessMult);
 
         // DiscussionNodes: larger octahedron so they read as meta-nodes at a glance.
         // Everything else: standard sphere.
-        const radius   = isDiscussion ? 5.95 : 5.6;
+        // In thick time mode _thickSize score enlarges node (1=5.6 → 7=9.0)
+        const thickBonus = node._thickSize ? (node._thickSize - 1) * 0.55 : 0;
+        const radius     = isDiscussion ? 5.95 : (5.6 + thickBonus);
         const geometry = isDiscussion
             ? new THREE.OctahedronGeometry(radius)
             : new THREE.SphereGeometry(radius, 16, 12);
@@ -483,7 +533,46 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
         nodeMeshes.set(node.id, { group, labelSprite: sprite, ring, radius });
     }
 
-    function _tubeRadius(w) {
+    // ── Thick time — ontological weight of the relation ────────────────────────────
+    // Reflected in bead size and particle density.
+    const BONCUK_THRESHOLD = 3.0;
+    const BONCUK_MAX_R     = 5.5;
+    const BONCUK_MIN_R     = 1.2;
+
+    function _nodeThickScore(node) {
+        if (!node) return 1;
+        let s = 1;
+        try {
+            const nid      = node.id || node.node_id;
+            const entries  = JSON.parse(localStorage.getItem('drift_log_entries') || '[]');
+            const comments = JSON.parse(localStorage.getItem('drift_node_comments') || '{}');
+            if (entries.some(e => (e.crystals||[]).some(c => c.nodeId === nid))) s += 1;
+            const nc = comments[nid] || [];
+            if (nc.some(c => c.type === 'inner')) s += 1;
+            if (nc.some(c => c.type === 'outer')) s += 1;
+        } catch {}
+        if (node.ontology_status === 'deconstructed') s += 1;
+        return Math.min(s, 4);
+    }
+
+    function _thickScore(src, tgt, link) {
+        const typeBonus = {
+            HAUNTS:            2.0, OPENS_INTO:        2.0,
+            SEDIMENTS_INTO:    1.5, DETERRITORIALIZES: 1.5,
+            RETERRITORIALIZES: 1.5, FRICTION:          1.0,
+            CONTAMINATES:      1.0, SUPPLEMENTS:       1.0,
+            RESONATES_WITH:    0.5, INTENSIFIES:       0.5,
+        }[(link.rel_type||'').toUpperCase()] || 0;
+
+        const ontoBonus = {
+            deconstructed: 1.5, suspended: 1.0,
+            flowing: 0.5,       crystallized: 0,
+        }[link.ontology_status || 'crystallized'] || 0;
+
+        return _nodeThickScore(src) + _nodeThickScore(tgt) + typeBonus + ontoBonus;
+    }
+
+        function _tubeRadius(w) {
         return 0.325 + w * 1.3;
     }
 
@@ -495,11 +584,31 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
         if (!src || !tgt) return;
 
         const relType = (link.rel_type || link.relation_type || '').toUpperCase().trim();
-        const baseHex = REL_COLORS[relType] || '#445070';
+        const baseHex = link.color || REL_COLORS[relType] || '#445070';
         const conf    = link.confidence ?? 0.75;
         const w       = link.weight ?? 1.0;
 
-        const alpha = 0.08 + conf * 0.30;
+        // Layer-based visual grammar:
+        // logical → straight, full opacity
+        // dynamic  → curved (more bend in buildCurvePoints), medium opacity
+        // uncertain → dotted, low opacity
+        const layer   = link.layer || 'logical';
+        const onto    = link.ontology_status || 'crystallized';
+
+        const ontoOpacity = {
+            crystallized:  1.0,
+            suspended:     0.55,
+            deconstructed: 0.85,
+            flowing:       0.35,
+        }[onto] || 1.0;
+
+        const layerOpacityMult = {
+            logical:   1.0,
+            dynamic:   0.75,
+            uncertain: 0.45,
+        }[layer] || 1.0;
+
+        const alpha = (0.08 + conf * 0.30) * ontoOpacity * layerOpacityMult;
 
         const curvePoints = buildCurvePoints(src, tgt, link);
         const tr     = _tubeRadius(w);
@@ -530,23 +639,52 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
         arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), arrowDir);
         scene.add(arrow);
 
-        const count = Math.round(1 + w * 3);
+        // ── Thick time ───────────────────────────────────────────────────────────
+        const thick = _thickScore(src, tgt, link);
+
+        // Particles — flowing relations fast and many, crystallized slow and few
+        const ontoFlowMult = {
+            flowing: 2.2, suspended: 1.5, deconstructed: 1.2, crystallized: 0.6,
+        }[onto] || 1.0;
+        const count = Math.round(1 + w * 2 + thick * 0.7 * ontoFlowMult);
         const pGeo  = new THREE.BufferGeometry();
         pGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
         const particles = new THREE.Points(pGeo, new THREE.PointsMaterial({
-            color: hexToThreeColor(baseHex),
-            size: 0.975 + w * 1.625,
+            color:       hexToThreeColor(baseHex),
+            size:        0.8 + w * 1.2 + thick * 0.12,
             transparent: true,
-            opacity: 0.9,
-            depthWrite: false,
+            opacity:     Math.min(0.7 + thick * 0.04, 0.95),
+            depthWrite:  false,
         }));
+        const baseSpeed = onto === 'flowing'     ? 0.0040 :
+                          onto === 'suspended'   ? 0.0022 :
+                          onto === 'crystallized'? 0.0010 : 0.0018;
         particles.userData.offsets = Array.from({ length: count }, (_, i) => i / count);
-        particles.userData.speed   = 0.002 + w * 0.0008;
+        particles.userData.speed   = baseSpeed + w * 0.0005 + thick * 0.0002;
         scene.add(particles);
+
+        // Bead — appears at midpoint of edges that cross the threshold
+        let boncuk = null;
+        if (thick >= BONCUK_THRESHOLD && curvePoints.length > 1) {
+            const midPt = curvePoints[Math.floor(curvePoints.length / 2)];
+            const bR    = Math.min(BONCUK_MIN_R + (thick - BONCUK_THRESHOLD) * 0.52, BONCUK_MAX_R);
+            const bOp   = layer === 'dynamic' ? 0.55 : 0.32;
+            boncuk = new THREE.Mesh(
+                new THREE.SphereGeometry(bR, 10, 8),
+                new THREE.MeshBasicMaterial({
+                    color:       hexToThreeColor(baseHex),
+                    transparent: true,
+                    opacity:     bOp,
+                    depthWrite:  false,
+                })
+            );
+            boncuk.position.copy(midPt);
+            scene.add(boncuk);
+        }
 
         const lid = link._id || link.id || `${srcId}__${tgtId}__${relType}`;
         link._id  = lid;
-        linkMeshes.set(lid, { line, arrow, particles, curvePoints, srcId, tgtId, link });
+        linkMeshes.set(lid, { line, arrow, particles, boncuk, curvePoints, srcId, tgtId, link });
     }
 
     function _rebuildLinksFor(nodeId) {
@@ -572,6 +710,11 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
                 new THREE.Vector3(0,1,0),
                 new THREE.Vector3().subVectors(pts[last], pts[prev]).normalize()
             );
+            // Update bead midpoint
+            if (entry.boncuk) {
+                const midIdx = Math.floor(pts.length / 2);
+                entry.boncuk.position.copy(pts[midIdx]);
+            }
         }
     }
 
@@ -580,8 +723,9 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
             scene.remove(group); scene.remove(labelSprite);
             if (ring) scene.remove(ring);
         }
-        for (const { line, arrow, particles } of linkMeshes.values()) {
+        for (const { line, arrow, particles, boncuk } of linkMeshes.values()) {
             scene.remove(line); scene.remove(arrow); scene.remove(particles);
+            if (boncuk) scene.remove(boncuk);
             line.geometry?.dispose();
         }
         nodeMeshes.clear();
@@ -708,7 +852,7 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
                 labelSprite.material.opacity = isMember ? 0.9 : 0.0;
             }
 
-            for (const { line, arrow, particles, srcId, tgtId, link } of linkMeshes.values()) {
+            for (const { line, arrow, particles, boncuk, srcId, tgtId, link } of linkMeshes.values()) {
                 const isMemberLink = inSet.has(srcId) && inSet.has(tgtId);
                 const conf  = link.confidence ?? 0.75;
                 const w     = link.weight ?? 1.0;
@@ -724,6 +868,10 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
                 if (particles.material) {
                     particles.material.transparent = true;
                     particles.material.opacity = isMemberLink ? 0.9 : 0.0;
+                }
+                if (boncuk?.material) {
+                    boncuk.material.transparent = true;
+                    boncuk.material.opacity = isMemberLink ? boncuk.material.opacity : 0.0;
                 }
             }
 
@@ -752,13 +900,14 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
                 });
                 labelSprite.material.opacity = 0.9;
             }
-            for (const { line, arrow, particles, link } of linkMeshes.values()) {
+            for (const { line, arrow, particles, boncuk, link } of linkMeshes.values()) {
                 const conf  = link.confidence ?? 0.75;
                 const w     = link.weight ?? 1.0;
                 const alpha = 0.08 + conf * 0.30;
                 if (line.material)      { line.material.opacity = alpha; }
                 if (arrow.material)     { arrow.material.opacity = Math.min(alpha + 0.15, 1.0); }
                 if (particles.material) { particles.material.opacity = 0.9; }
+                if (boncuk?.material)   { boncuk.material.opacity = 0.35; }
             }
         },
     };

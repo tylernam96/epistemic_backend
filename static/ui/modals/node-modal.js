@@ -10,6 +10,10 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
     const modal = document.createElement('div');
     modal.id = 'add-node-modal';
     modal.className = 'creation-modal-overlay';
+    
+    // Store subnodes in modal state
+    let subnodes = [];
+    
     modal.innerHTML = `
         <div class="creation-modal">
             <div class="modal-header">
@@ -18,7 +22,12 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             </div>
             <div class="modal-body">
                 <div class="field-group">
-                    <label>Content <span class="req">*</span></label>
+                    <label>Title <span class="opt">(shows above node)</span></label>
+                    <input type="text" id="an-title" placeholder="Node title..." style="margin-bottom:10px;">
+                </div>
+                
+                <div class="field-group">
+                    <label>Description <span class="req">*</span></label>
                     <textarea id="an-content" rows="3" placeholder="Describe this concept, observation, or event..."></textarea>
 
                     <div id="an-suggestion" class="position-suggestion" style="display:none; margin-top:10px; background:rgba(0,200,160,0.03); border:1px solid rgba(0,200,160,0.15); border-radius:8px; overflow:hidden; position:relative;">
@@ -47,6 +56,14 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                     </div>
 
                     <div id="an-details-popup" style="display:none; position:fixed; background:#0c0e16; border:1px solid var(--concept); border-radius:8px; padding:14px; max-width:350px; z-index:10000; box-shadow:0 10px 40px rgba(0,0,0,0.8); backdrop-filter:blur(8px); pointer-events:none; white-space:pre-wrap; font-family:'DM Mono',monospace; font-size:11px; line-height:1.7; color:#8e99b3;"></div>
+                </div>
+
+                <div class="field-group">
+                    <label style="display:flex; align-items:center; justify-content:space-between;">
+                        <span>Subnodes <span class="opt">(hidden until node is clicked)</span></span>
+                        <button id="add-subnode-btn" type="button" style="background:rgba(0,200,160,0.08); border:1px solid rgba(0,200,160,0.3); color:var(--concept); border-radius:4px; padding:4px 10px; font-size:10px; cursor:pointer; font-family:'DM Mono',monospace;">+ Add Subnode</button>
+                    </label>
+                    <div id="subnodes-container" style="margin-top:8px; display:flex; flex-direction:column; gap:8px;"></div>
                 </div>
 
                 <div class="field-row">
@@ -99,6 +116,71 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
 
     document.body.appendChild(modal);
 
+    // Function to render subnodes list
+    function renderSubnodes() {
+        const container = document.getElementById('subnodes-container');
+        if (!subnodes.length) {
+            container.innerHTML = '<div style="color:#445070; font-size:11px; font-family:\'DM Mono\',monospace; padding:8px;">No subnodes yet — click "+ Add Subnode" to create one</div>';
+            return;
+        }
+        
+        container.innerHTML = subnodes.map((subnode, idx) => `
+            <div style="background:rgba(255,255,255,0.02); border:1px solid #1e2535; border-radius:6px; padding:10px;">
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <input type="text" data-subnode-idx="${idx}" data-field="title" value="${subnode.title}" placeholder="Subnode title..." style="width:100%; background:#0c0e16; border:1px solid #1e2535; border-radius:4px; color:#c8d0e0; font-family:'DM Mono',monospace; font-size:11px; padding:6px 8px; margin-bottom:6px;">
+                        <textarea data-subnode-idx="${idx}" data-field="description" rows="2" placeholder="Subnode description..." style="width:100%; background:#0c0e16; border:1px solid #1e2535; border-radius:4px; color:#c8d0e0; font-family:'DM Mono',monospace; font-size:11px; padding:6px 8px; resize:none;">${subnode.description}</textarea>
+                    </div>
+                    <button data-remove-subnode="${idx}" style="background:none; border:1px solid rgba(255,90,90,0.25); color:rgba(255,90,90,0.5); border-radius:4px; padding:4px 8px; font-size:10px; cursor:pointer; margin-left:8px; flex-shrink:0;">✕</button>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <label style="color:#445070; font-size:10px; font-family:'DM Mono',monospace; flex-shrink:0;">Strength:</label>
+                    <input type="range" data-subnode-idx="${idx}" data-field="strength" min="1" max="100" value="${subnode.strength}" style="flex:1;">
+                    <span data-strength-display="${idx}" style="color:var(--concept); font-size:10px; font-family:'DM Mono',monospace; width:40px; text-align:right;">${subnode.strength}</span>
+                </div>
+            </div>
+        `).join('');
+        
+        // Add event listeners for subnode fields
+        container.querySelectorAll('input[data-subnode-idx], textarea[data-subnode-idx]').forEach(el => {
+            const idx = parseInt(el.dataset.subnodeIdx);
+            const field = el.dataset.field;
+            
+            if (field === 'strength') {
+                el.oninput = (e) => {
+                    subnodes[idx].strength = parseInt(e.target.value);
+                    const display = container.querySelector(`[data-strength-display="${idx}"]`);
+                    if (display) display.textContent = e.target.value;
+                };
+            } else {
+                el.oninput = (e) => {
+                    subnodes[idx][field] = e.target.value;
+                };
+            }
+        });
+        
+        // Add remove button listeners
+        container.querySelectorAll('[data-remove-subnode]').forEach(btn => {
+            btn.onclick = () => {
+                const idx = parseInt(btn.dataset.removeSubnode);
+                subnodes.splice(idx, 1);
+                renderSubnodes();
+            };
+        });
+    }
+    
+    // Add subnode button
+    document.getElementById('add-subnode-btn').onclick = () => {
+        subnodes.push({
+            title: '',
+            description: '',
+            strength: 50
+        });
+        renderSubnodes();
+    };
+    
+    renderSubnodes();
+
     const contentInput   = document.getElementById('an-content');
     const suggestionDiv  = document.getElementById('an-suggestion');
     const explanationEl  = document.getElementById('an-explanation');
@@ -140,156 +222,87 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             // Background: Gemini relation prediction
             (async () => {
                 try {
-                    const embedRes = await fetch('/api/embed', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ text: content }),
-                    });
-                    if (!embedRes.ok) throw new Error('embed failed');
-                    const { embedding } = await embedRes.json();
-
-                    const nodesWithEmb = existingNodes.filter(n => n.embedding?.length > 0);
-                    if (!nodesWithEmb.length) { if (relDiv) relDiv.style.display = 'none'; return; }
-
-                    const sims = nodesWithEmb
-                        .map(n => ({ node: n, sim: cosineSimilarity(embedding, n.embedding) }))
-                        .sort((a, b) => b.sim - a.sim);
-
-                    const candidates = [
-                        ...sims.filter(m => m.sim >= 0.55).slice(0, 5),
-                        ...sims.filter(m => m.sim >= 0.3 && m.sim < 0.55).slice(0, 2),
-                    ].filter((m, i, arr) => arr.findIndex(x => x.node.node_id === m.node.node_id) === i);
-
-                    if (!candidates.length) { if (relDiv) relDiv.style.display = 'none'; return; }
-
-                    const geminiRes = await fetch('/api/placement/analyze-graph', {
+                    const resp = await fetch('/api/relations/predict', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
                             content, parent_type: parentType,
-                            existing_nodes: candidates.map(m => ({
-                                node_id: m.node.node_id,
-                                content: m.node.content || m.node.name || '',
-                                parent_type: m.node.parent_type || 'Concept',
-                                x: m.node.x || 0, y: m.node.y || 0, z: 0,
-                                embedding: [],
+                            existing_nodes: existingNodes.map(n => ({
+                                id: n.id, node_id: n.node_id,
+                                content: n.content || n.name || '',
+                                parent_type: n.parent_type || n.node_type || 'Concept',
+                                embedding: n.embedding,
                             })),
-                            existing_relations: [],
                         }),
                     });
-                    if (!geminiRes.ok) throw new Error('analyze-graph ' + geminiRes.status);
-                    const geminiData = await geminiRes.json();
-                    const relations  = (geminiData.predicted_relations || []).slice(0, 5);
+                    if (!resp.ok) throw new Error('Prediction failed');
+                    const predictionData = await resp.json();
+                    const rels = predictionData.relations || [];
 
-                    if (!currentSuggestion) return;
-                    const accepted = new Set(relations.map((_, i) => i));
-                    currentSuggestion._pendingRels  = relations;
-                    currentSuggestion._relAccepted  = accepted;
+                    currentSuggestion._pendingRels = rels;
+                    currentSuggestion._relAccepted = new Set(rels.map((_, i) => i));
 
-                    // Reposition if top relation is CONTRADICTS
-                    const topRel = relations.slice().sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))[0];
-                    if (topRel?.rel_type === 'CONTRADICTS') {
-                        const target = existingNodes.find(n => n.node_id === topRel.target_node_id);
-                        if (target) {
-                            const opp = repelFromOverlap(...Object.values(placeOpposite(target, existingNodes, 140)), existingNodes);
-                            currentSuggestion.x = opp.x;
-                            currentSuggestion.y = opp.y;
-                            coordsEl.textContent = `x: ${opp.x.toFixed(1)} y: ${opp.y.toFixed(1)} ⚔️`;
-                            explanationEl.textContent = currentSuggestion.explanation
-                                + `\n\n⚔️ CONTRADICTS "${(target.content || '').slice(0, 40)}" — repositioned to opposing side.`;
-                        }
+                    if (!rels.length) {
+                        relDiv.style.display = 'none';
+                        return;
                     }
 
-                    const REL_COLOR = {
-                        CONTRADICTS:'#ff5a5a', SUPPORTS:'#00c8a0', REQUIRES:'#ffa500',
-                        TRIGGERS:'#a78bfa', AMPLIFIES:'#34d399', DEPENDS_ON:'#60a5fa',
-                        ELABORATES:'#f9a8d4', EXEMPLIFIES:'#fcd34d', RELATES_TO:'#445070',
-                    };
+                    relList.innerHTML = rels.map((rel, i) => {
+                        const targetNode = existingNodes.find(n => n.node_id === rel.target_node_id);
+                        const targetName = targetNode
+                            ? (targetNode.content || targetNode.name || '').slice(0, 40)
+                            : rel.target_node_id;
+                        return `
+                            <div data-rel-idx="${i}" style="display:flex; align-items:flex-start; gap:8px; padding:6px; background:rgba(0,200,160,0.02); border:1px solid rgba(0,200,160,0.15); border-radius:5px; cursor:pointer; transition:all 0.15s;">
+                                <input type="checkbox" data-rel-check="${i}" checked style="margin-top:2px; cursor:pointer;">
+                                <div style="flex:1; min-width:0;">
+                                    <div style="font-size:10px; font-weight:600; color:var(--concept); letter-spacing:0.05em; margin-bottom:2px;">${rel.rel_type}</div>
+                                    <div style="font-size:11px; color:#c8d0e0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${targetName}</div>
+                                    <div style="font-size:10px; color:#445070; margin-top:2px; line-height:1.4;">${rel.justification}</div>
+                                </div>
+                            </div>`;
+                    }).join('');
 
-                    function renderRelCards() {
-                        if (!relList) return;
-                        relList.innerHTML = relations.length === 0
-                            ? '<div style="padding:4px 2px;font-size:10px;color:#445070;">No strong relations detected.</div>'
-                            : relations.map((r, i) => {
-                                const col    = REL_COLOR[r.rel_type] || '#445070';
-                                const chk    = accepted.has(i);
-                                const target = existingNodes.find(n => n.node_id === r.target_node_id);
-                                const label  = (target?.content || target?.name || r.target_node_id || '').substring(0, 52);
-                                return `<div data-rel-idx="${i}" style="display:flex;align-items:flex-start;gap:7px;padding:7px 8px;
-                                    background:rgba(255,255,255,0.015);border:1px solid ${chk ? col+'44' : '#1a2030'};
-                                    border-radius:5px;cursor:pointer;">
-                                    <div style="margin-top:2px;width:12px;height:12px;border-radius:2px;flex-shrink:0;
-                                        border:1px solid ${chk ? col : '#2a3550'};background:${chk ? col+'33' : 'transparent'};
-                                        display:flex;align-items:center;justify-content:center;font-size:8px;color:${col};">${chk ? '✓' : ''}</div>
-                                    <div style="flex:1;min-width:0;">
-                                        <div style="display:flex;align-items:center;gap:5px;margin-bottom:2px;">
-                                            <span style="font-size:9px;font-weight:700;color:${col};letter-spacing:0.06em;">${r.rel_type}</span>
-                                            <span style="font-size:9px;color:#2a3550;">${Math.round((r.confidence ?? 0.75) * 100)}%</span>
-                                        </div>
-                                        <div style="font-size:10px;color:#c8d0e0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</div>
-                                        <div style="font-size:9px;color:#8e99b3;margin-top:2px;line-height:1.4;">${r.justification || ''}</div>
-                                    </div>
-                                </div>`;
-                            }).join('');
-
-                        relList.querySelectorAll('[data-rel-idx]').forEach(el => {
-                            el.onclick = () => {
-                                const i = parseInt(el.dataset.relIdx);
-                                if (accepted.has(i)) accepted.delete(i); else accepted.add(i);
-                                renderRelCards();
-                            };
-                        });
-                    }
-
-                    renderRelCards();
-                    if (relDiv) relDiv.style.display = relations.length > 0 ? 'block' : 'none';
+                    relList.querySelectorAll('[data-rel-check]').forEach(cb => {
+                        const i = parseInt(cb.dataset.relCheck);
+                        cb.onchange = () => {
+                            if (cb.checked) currentSuggestion._relAccepted.add(i);
+                            else currentSuggestion._relAccepted.delete(i);
+                        };
+                    });
 
                 } catch (err) {
                     console.warn('Relation prediction failed:', err);
-                    if (relDiv) relDiv.style.display = 'none';
+                    relDiv.style.display = 'none';
                 }
             })();
 
-            if (suggestion?.x !== undefined) {
-                explanationEl.textContent = suggestion.explanation;
-                coordsEl.textContent = `x: ${suggestion.x.toFixed(1)} y: ${suggestion.y.toFixed(1)}`;
-                if (suggestion.matches?.length > 0) {
-                    const avg = suggestion.matches.reduce((s, m) => s + parseInt(m.sim), 0) / suggestion.matches.length;
-                    confidenceEl.textContent = `Match quality: ${avg.toFixed(0)}%`;
-                }
-                useSuggestionBtn.onclick = () => {
-                    xInput.value = suggestion.x.toFixed(1);
-                    yInput.value = suggestion.y.toFixed(1);
-                    if (!zInput.value) {
-                        const lvl = parseInt(document.getElementById('an-abstraction').value);
-                        zInput.value = (lvl - 3) * 60;
-                    }
-                    suggestionDiv.style.opacity = '0.7';
-                    setTimeout(() => { suggestionDiv.style.display = 'none'; suggestionDiv.style.opacity = '1'; }, 500);
-                    [xInput, yInput].forEach(inp => {
-                        inp.style.background = 'rgba(0,200,160,0.15)';
-                        inp.style.borderColor = 'var(--concept)';
-                        setTimeout(() => { inp.style.background = ''; inp.style.borderColor = ''; }, 800);
-                    });
-                };
-            } else if (suggestion?.explanation) {
-                explanationEl.textContent = suggestion.explanation;
-                coordsEl.textContent = 'x: — y: — (manual placement recommended)';
-                useSuggestionBtn.style.opacity = '0.5';
+            if (!suggestion.x) {
+                explanationEl.textContent = suggestion.explanation || 'Could not generate suggestion.';
+                coordsEl.textContent = 'x: — y: —';
+                useSuggestionBtn.style.opacity = '0.4';
                 useSuggestionBtn.style.pointerEvents = 'none';
+                return;
             }
+
+            explanationEl.textContent = suggestion.explanation || 'Position calculated from semantic similarity.';
+            confidenceEl.textContent = suggestion.label || '';
+            coordsEl.textContent = `x: ${suggestion.x.toFixed(1)} y: ${suggestion.y.toFixed(1)}`;
         }, 800);
     });
 
-    // Tooltip hover
+    useSuggestionBtn.onclick = () => {
+        if (!currentSuggestion?.x) return;
+        xInput.value = currentSuggestion.x.toFixed(2);
+        yInput.value = currentSuggestion.y.toFixed(2);
+    };
+
     explanationEl.addEventListener('mouseenter', e => {
-        if (currentSuggestion?.matches?.length > 0) {
-            popupEl.textContent = currentSuggestion.matches.map(m => {
-                const bar = '█'.repeat(Math.floor(parseInt(m.sim) / 10)) + '░'.repeat(10 - Math.floor(parseInt(m.sim) / 10));
-                return `${m.name}\n   ${bar} ${m.sim}% · ${m.type}`;
-            }).join('\n\n');
-            popupEl.style.display = 'block';
-            const rect = e.target.getBoundingClientRect();
+        if (!currentSuggestion?.explanation) return;
+        popupEl.textContent = currentSuggestion.explanation;
+        popupEl.style.display = 'block';
+        const rect = explanationEl.getBoundingClientRect();
+        if (rect) {
             popupEl.style.left = (rect.right + 20) + 'px';
             popupEl.style.top  = (rect.top  - 20) + 'px';
         }
@@ -320,13 +333,14 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
         const content = document.getElementById('an-content').value.trim();
         if (!content) {
             const err = document.getElementById('an-error');
-            err.textContent = 'Content is required.';
+            err.textContent = 'Description is required.';
             err.style.display = 'block';
             return;
         }
         const btn = document.getElementById('add-node-submit');
         btn.textContent = 'Creating...'; btn.disabled = true;
 
+        const title = document.getElementById('an-title').value.trim();
         const xv = document.getElementById('an-x').value;
         const yv = document.getElementById('an-y').value;
         const zv = document.getElementById('an-z').value;
@@ -337,6 +351,7 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             .filter((_, i) => currentSuggestion?._relAccepted?.has(i));
 
         const result = await onSubmit({
+            title,
             content,
             parent_type:        document.getElementById('an-type').value,
             valid_from:         vf ? parseInt(vf) : null,
@@ -346,6 +361,7 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             z:                  zv !== '' ? parseFloat(zv) : null,
             abstraction_level:  parseInt(document.getElementById('an-abstraction').value),
             confidence_tier:    parseInt(document.getElementById('an-confidence-tier').value),
+            subnodes:           subnodes.filter(s => s.title.trim() || s.description.trim()), // Only include non-empty subnodes
         }, { ...(currentSuggestion || {}), acceptedRelations });
 
         window.clearSuggestedPosition?.();
@@ -359,6 +375,28 @@ export function renderEditNodeModal(node, onSubmit) {
 
     const NODE_TYPES  = Object.keys(TYPE_COLORS);
     const currentType = node.parent_type || node.node_type || 'Concept';
+    
+    console.log('=== EDIT NODE MODAL ===');
+    console.log('Node ID:', node.id);
+    console.log('Node subnodes:', node.subnodes);
+    console.log('Full node object:', node);
+    
+
+    // Initialize subnodes from existing node data
+    //let subnodes = node.subnodes || [];
+
+    let subnodes = [];
+    if (node.subnodes && Array.isArray(node.subnodes)) {
+        subnodes = node.subnodes.map(s => ({
+            id: s.id || null,
+            title: s.title || s.name || '',
+            description: s.description || s.content || '',
+            strength: s.strength || 50
+        }));
+        console.log('Initialized subnodes:', subnodes);
+    } else {
+        console.log('No subnodes found on node object');
+    }
 
     const modal = document.createElement('div');
     modal.id = 'edit-node-modal';
@@ -372,9 +410,23 @@ export function renderEditNodeModal(node, onSubmit) {
             </div>
             <div class="modal-body">
                 <div class="field-group">
-                    <label>Content <span class="req">*</span></label>
+                    <label>Title <span class="opt">(shows above node)</span></label>
+                    <input type="text" id="en-title" value="${node.title || ''}" style="margin-bottom:10px;">
+                </div>
+                
+                <div class="field-group">
+                    <label>Description <span class="req">*</span></label>
                     <textarea id="en-content" rows="4">${node.content || node.name || ''}</textarea>
                 </div>
+                
+                <div class="field-group">
+                    <label style="display:flex; align-items:center; justify-content:space-between;">
+                        <span>Subnodes <span class="opt">(hidden until node is clicked)</span></span>
+                        <button id="edit-add-subnode-btn" type="button" style="background:rgba(0,200,160,0.08); border:1px solid rgba(0,200,160,0.3); color:var(--concept); border-radius:4px; padding:4px 10px; font-size:10px; cursor:pointer; font-family:'DM Mono',monospace;">+ Add Subnode</button>
+                    </label>
+                    <div id="edit-subnodes-container" style="margin-top:8px; display:flex; flex-direction:column; gap:8px;"></div>
+                </div>
+                
                 <div class="field-row">
                     <div class="field-group">
                         <label>Type</label>
@@ -400,6 +452,74 @@ export function renderEditNodeModal(node, onSubmit) {
         </div>`;
 
     document.body.appendChild(modal);
+    
+    // Function to render subnodes list for edit modal
+    function renderEditSubnodes() {
+        const container = document.getElementById('edit-subnodes-container');
+        if (!subnodes.length) {
+            container.innerHTML = '<div style="color:#445070; font-size:11px; font-family:\'DM Mono\',monospace; padding:8px;">No subnodes — click "+ Add Subnode" to create one</div>';
+            return;
+        }
+        
+        container.innerHTML = subnodes.map((subnode, idx) => `
+            <div style="background:rgba(255,255,255,0.02); border:1px solid #1e2535; border-radius:6px; padding:10px;">
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:8px;">
+                    <div style="flex:1;">
+                        <input type="text" data-edit-subnode-idx="${idx}" data-field="title" value="${subnode.title || ''}" placeholder="Subnode title..." style="width:100%; background:#0c0e16; border:1px solid #1e2535; border-radius:4px; color:#c8d0e0; font-family:'DM Mono',monospace; font-size:11px; padding:6px 8px; margin-bottom:6px;">
+                        <textarea data-edit-subnode-idx="${idx}" data-field="description" rows="2" placeholder="Subnode description..." style="width:100%; background:#0c0e16; border:1px solid #1e2535; border-radius:4px; color:#c8d0e0; font-family:'DM Mono',monospace; font-size:11px; padding:6px 8px; resize:none;">${subnode.description || ''}</textarea>
+                    </div>
+                    <button data-edit-remove-subnode="${idx}" style="background:none; border:1px solid rgba(255,90,90,0.25); color:rgba(255,90,90,0.5); border-radius:4px; padding:4px 8px; font-size:10px; cursor:pointer; margin-left:8px; flex-shrink:0;">✕</button>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <label style="color:#445070; font-size:10px; font-family:'DM Mono',monospace; flex-shrink:0;">Strength:</label>
+                    <input type="range" data-edit-subnode-idx="${idx}" data-field="strength" min="1" max="100" value="${subnode.strength || 50}" style="flex:1;">
+                    <span data-edit-strength-display="${idx}" style="color:var(--concept); font-size:10px; font-family:'DM Mono',monospace; width:40px; text-align:right;">${subnode.strength || 50}</span>
+                </div>
+            </div>
+        `).join('');
+        
+        // Add event listeners for subnode fields
+        container.querySelectorAll('input[data-edit-subnode-idx], textarea[data-edit-subnode-idx]').forEach(el => {
+            const idx = parseInt(el.dataset.editSubnodeIdx);
+            const field = el.dataset.field;
+            
+            if (field === 'strength') {
+                el.oninput = (e) => {
+                        console.log('input changed:', idx, field, e.target.value);
+
+                    subnodes[idx].strength = parseInt(e.target.value);
+                    const display = container.querySelector(`[data-edit-strength-display="${idx}"]`);
+                    if (display) display.textContent = e.target.value;
+                };
+            } else {
+                el.oninput = (e) => {
+                    subnodes[idx][field] = e.target.value;
+                };
+            }
+        });
+        
+        // Add remove button listeners
+        container.querySelectorAll('[data-edit-remove-subnode]').forEach(btn => {
+            btn.onclick = () => {
+                const idx = parseInt(btn.dataset.editRemoveSubnode);
+                subnodes.splice(idx, 1);
+                renderEditSubnodes();
+            };
+        });
+    }
+    
+    // Add subnode button
+    document.getElementById('edit-add-subnode-btn').onclick = () => {
+        subnodes.push({
+            title: '',
+            description: '',
+            strength: 50
+        });
+        renderEditSubnodes();
+    };
+    
+    renderEditSubnodes();
+    
     setTimeout(() => document.getElementById('en-content')?.focus(), 50);
 
     document.getElementById('edit-node-close').onclick  = () => modal.remove();
@@ -407,28 +527,36 @@ export function renderEditNodeModal(node, onSubmit) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 
     document.getElementById('edit-node-submit').onclick = async () => {
+        console.log('Submit clicked, subnodes:', subnodes); // ← add this
+
         const content = document.getElementById('en-content').value.trim();
         if (!content) {
             const err = document.getElementById('en-error');
-            err.textContent = 'Content is required.'; err.style.display = 'block'; return;
+            err.textContent = 'Description is required.'; err.style.display = 'block'; return;
         }
         const btn = document.getElementById('edit-node-submit');
         btn.textContent = 'Saving...'; btn.disabled = true;
+        const title = document.getElementById('en-title').value.trim();
         const vf = document.getElementById('en-valid-from').value;
         const vt = document.getElementById('en-valid-to').value;
         try {
             await onSubmit({
+                title,
                 content,
                 parent_type: document.getElementById('en-type').value,
                 valid_from:  vf ? parseInt(vf) : null,
                 valid_to:    vt ? parseInt(vt) : null,
+                subnodes:    subnodes.filter(s => s.title.trim() || s.description.trim()),
             });
+
+
             modal.remove();
             showFlash('Node updated');
-        } catch {
-            btn.textContent = 'Save Changes →'; btn.disabled = false;
-            const errEl = document.getElementById('en-error');
-            errEl.textContent = 'Save failed — check console.'; errEl.style.display = 'block';
-        }
+} catch(err) {
+    console.error('Submit error:', err); // ← add this
+    btn.textContent = 'Save Changes →'; btn.disabled = false;
+    const errEl = document.getElementById('en-error');
+    errEl.textContent = 'Save failed — check console.'; errEl.style.display = 'block';
+}
     };
 }

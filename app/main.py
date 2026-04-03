@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 from fastapi.responses import FileResponse
 from fastapi import HTTPException
+from typing import Optional, List
 
 
 from .database import driver
@@ -366,9 +367,18 @@ class NodeCreate(BaseModel):
     z: Optional[float] = None
     abstraction_level: Optional[int] = None  # 1–5: 5=axiom, 3=hypothesis, 1=observation
     confidence_tier: Optional[int] = None    # 0–3: 0=Speculative … 3=Confirmed
+    subnodes: Optional[List[dict]] = []
+
+class SubnodeUpdate(BaseModel):
+    id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    strength: Optional[int] = None
+
 
 class NodeUpdate(BaseModel):
     content: Optional[str] = None
+    title: Optional[str] = None  # ← add this
     node_id: Optional[str] = None
     x: Optional[float] = None
     y: Optional[float] = None
@@ -376,6 +386,8 @@ class NodeUpdate(BaseModel):
     abstraction_level: Optional[int] = None
     confidence_tier: Optional[int] = None
     placement_note: Optional[str] = None
+    subnodes: Optional[List[SubnodeUpdate]] = None
+
 
 class LinkRequest(BaseModel):
     node_a: str
@@ -550,12 +562,19 @@ def create_node(data: NodeCreate):
                 record = result.single()
                 node_db_id = record["id"]
                 node_id    = record["node_id"]
+                
+                print("🔥 NODE DB ID BEING USED:", node_db_id)
+
                 break
             except Exception as e:
                 if "ConstraintValidationFailed" in str(e) and attempt < 2:
                     continue
                 raise
+                # --- CREATE SUBNODES ---
+    if data.subnodes:
+        print("🔥 SAVING SUBNODES:", data.subnodes)
 
+        GraphService.save_subnodes(node_db_id, data.subnodes)
     # --- Generate embedding in a background thread so the HTTP response
     #     returns immediately. The embedding will be stored within ~1-2s,
     #     long before the user interacts with the graph again. ---
@@ -739,17 +758,22 @@ def create_link(data: LinkRequest):
 
 @app.patch("/api/nodes/{node_id}")
 def update_node(node_id: str, data: NodeUpdate):
-    query = """
-    MATCH (n) WHERE elementId(n) = $node_id
-    SET n += $props
-    RETURN n
-    """
-    props = {k: v for k, v in data.dict().items() if v is not None}
-    # z is derived from abstraction_level on the frontend — never persist it.
-    # Saving raw world-coordinate z values caused stale positions on reload.
+    props = {k: v for k, v in data.dict().items() if v is not None and k != 'subnodes'}
     props.pop("z", None)
+    
     with driver.session() as session:
-        session.run(query, {"node_id": node_id, "props": props})
+        # Update main node
+        if props:
+            session.run(
+                "MATCH (n) WHERE elementId(n) = $node_id SET n += $props",
+                {"node_id": node_id, "props": props}
+            )
+        
+        # Handle subnodes
+    if data.subnodes is not None:
+        subnode_dicts = [{"title": s.title or "", "description": s.description or "", "strength": s.strength or 50} for s in data.subnodes]
+        GraphService.save_subnodes(node_id, subnode_dicts)
+    print("Subnodes received:", data.subnodes)
     return {"status": "updated"}
 
 @app.delete("/api/nodes/{node_id}")

@@ -49,6 +49,11 @@
                 <button class="panel-glass action-btn" onclick="window.dispatch('SETTINGS')" title="Node &amp; relation types">
                     ⚙ Settings
                 </button>
+                <button class="panel-glass action-btn" onclick="window.copyShareUrl()"
+                    title="Copy read-only share link"
+                    style="color:#8896b8;border-color:rgba(136,150,184,0.3);">
+                    ↗ Share
+                </button>
             </div>
         </div>
 
@@ -62,14 +67,20 @@
         </div>
 
         <div id="time-controller" class="panel-glass">
-            <div id="time-header">
-                <span>Abstraction Level</span>
-                <span id="current-time">L1</span>
+            <div id="time-header" style="display:flex;align-items:center;justify-content:space-between;">
+                <span id="time-mode-label">Chronological</span>
+                <span id="current-time" style="color:var(--concept);">—</span>
             </div>
-            <input type="range" id="time-slider" min="1" max="5" value="1">
-            <div id="level-filter-row">
-                <button id="btn-show-all-levels" class="level-filter-btn" title="Show all levels up to selected">
-                    Show only L<span id="level-btn-label">1</span>
+            <input type="range" id="time-slider" min="0" max="0" value="0">
+            <div id="level-filter-row" style="display:flex;gap:6px;">
+                <button id="btn-show-all-levels" class="level-filter-btn"
+                    title="Show all / show only selected" style="flex:1;">
+                    ≤ <span id="level-btn-label">—</span>
+                </button>
+                <button id="btn-thick-time-mode" class="level-filter-btn"
+                    title="Chronological / Thick Time mode"
+                    style="color:#8896b8;border-color:rgba(136,150,184,0.3);white-space:nowrap;">
+                    ◈ Chronological
                 </button>
             </div>
         </div>
@@ -82,6 +93,14 @@
     </div>
 
     <div id="tooltip"></div>
+
+    <script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.152.0/build/three.module.js"
+  }
+}
+</script>
 
     <script type="module" src="/static/app.js"></script>
 

@@ -17,6 +17,7 @@ export async function suggestPositionFromGraph(content, existingNodes, existingR
                 content: n.content || n.name || '',
                 parent_type: n.parent_type || n.node_type || 'Concept',
                 abstraction_level: n.abstraction_level || 3,
+                epoch: n.epoch ?? n.valid_from ?? null,
                 confidence_tier: n.confidence_tier,
                 valid_from: n.valid_from, valid_to: n.valid_to,
                 x: n.x || 0, y: n.y || 0, z: n.z || 0,
@@ -174,9 +175,10 @@ export function showGraphAwareExplanation(node, suggestionData) {
         ${relationsHtml}
         <div style="display:flex;gap:12px;margin-top:16px;padding-top:16px;border-top:1px solid #1e2535;">
             <div style="flex:1;">
-                <div style="color:#445070;font-size:9px;margin-bottom:4px;">POSITION</div>
+                <div style="color:#445070;font-size:9px;margin-bottom:4px;">KONUM</div>
                 <div style="color:#00c8a0;font-size:11px;">x: ${suggestionData.position?.x?.toFixed(1) || '?'}</div>
                 <div style="color:#00c8a0;font-size:11px;">y: ${suggestionData.position?.y?.toFixed(1) || '?'}</div>
+                <div style="color:#00c8a0;font-size:11px;">z: ${suggestionData.position?.z?.toFixed(1) || '0 (epoch yok)'}</div>
             </div>
             <div style="flex:2;">
                 <div style="color:#445070;font-size:9px;margin-bottom:4px;">CLUSTER</div>
@@ -358,7 +360,10 @@ export function showPlacementExplanation(node, suggestionData) {
                 ${matchDetails}
             </div>` : ''}
         <div style="margin-top:16px;padding-top:12px;border-top:1px solid #1e2535;font-size:10px;color:#445070;">
-            📍 Position: ${node.x?.toFixed(1) || '?'}, ${node.y?.toFixed(1) || '?'}, ${node.z?.toFixed(1) || '?'}
+            📍 Konum: x=${node.x?.toFixed(1) || '?'} y=${node.y?.toFixed(1) || '?'} z=${node.z?.toFixed(1) || '?'}
+            ${(node.epoch ?? node.valid_from) != null
+                ? `<span style="margin-left:8px;color:var(--concept);">⏱ Epoch: ${node.epoch ?? node.valid_from}</span>`
+                : '<span style="margin-left:8px;color:#2a3048;">Epoch yok — Z=0</span>'}
         </div>`;
 
     document.body.appendChild(panel);

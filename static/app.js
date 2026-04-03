@@ -1,5 +1,18 @@
 import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
 import { UI } from './ui.js';
+import { openDriftCapture, openDriftArchive, linkCrystalToNode, openTimeLayerPanel } from './ui/hud/drift-log.js';
+import * as THREE from 'https://unpkg.com/three@0.152.0/build/three.module.js';
+
+// ── epochToZ: converts epoch value to Z coordinate ──────────────────────────
+// Year format (>1900): (year - 2000) * 40  →  2000=0, 2010=400, 2020=800
+// Period format (small number): period * 80
+function epochToZ(node) {
+    const epoch = node.epoch ?? node.valid_from ?? null;
+    if (epoch == null) return 0;
+    const e = Number(epoch);
+    if (isNaN(e)) return 0;
+    return e > 1900 ? (e - 2000) * 40 : e * 80;
+}
 
 const state = {
     selectedNode: null,
@@ -35,6 +48,36 @@ const Graph = createGraph(
 );
 window.__graph = Graph; // debug access
 window.__state = state;
+
+function initSubnodeRaycaster() {
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const canvas = document.getElementById('3d-graph').querySelector('canvas');
+
+    canvas.addEventListener('click', (e) => {
+        // Find camera lazily on each click (available after graph loads)
+        let camera;
+        Graph.scene().traverse(obj => { if (obj.isCamera) camera = obj; });
+        if (!camera) return;
+
+        const rect = canvas.getBoundingClientRect();
+        mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+        mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+
+        const clickableSpheres = subnodeState.subnodeObjects.filter(
+            o => o.isMesh && o.userData?.isSubnode
+        );
+        console.log('clickable spheres:', clickableSpheres.length);
+        const hits = raycaster.intersectObjects(clickableSpheres, false);
+        console.log('hits:', hits.length);
+        if (hits.length) {
+            hits[0].object.userData.onClick?.();
+            e.stopPropagation();
+        }
+    });
+}
 // -------------------------
 // Fly To Node
 // -------------------------
@@ -46,6 +89,53 @@ function flyToNode(node, duration = 2000) {
         node,
         duration
     );
+}
+function hexToRgb(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16)
+    } : { r: 255, g: 255, b: 255 };
+}
+
+function makeLabelSprite(text, colorHex, opacity = 0.9) {
+    console.log('makeLabelSprite called:', text, colorHex);
+
+    const canvas  = document.createElement('canvas');
+    const ctx     = canvas.getContext('2d');
+    // 2× resolution canvas for crisp rendering at distance
+    const fontSize = 42;
+    const pad      = 18;
+    ctx.font = `600 ${fontSize}px Arial`;
+    const textW   = ctx.measureText(text).width;
+    canvas.width  = textW + pad * 2;
+    canvas.height = fontSize + pad * 2;
+
+    // Dark pill background for legibility against any scene color
+    const borderRadius = canvas.height / 2;
+    ctx.fillStyle = 'rgba(5, 6, 8, 0.72)';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, canvas.width, canvas.height, borderRadius);
+    ctx.fill();
+
+    // Text
+    const {r, g, b} = hexToRgb(colorHex);
+    ctx.fillStyle = `rgba(${r},${g},${b},${opacity})`;
+
+    ctx.font = `600 ${fontSize}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        depthWrite: false,
+        transparent: true,
+    }));
+    // Scale down from 2× canvas so world units stay the same, but texture is sharper
+    sprite.scale.set(canvas.width / 10, canvas.height / 10, 1);
+    return sprite;
 }
 
 // -------------------------
@@ -84,9 +174,20 @@ function handleNodeDrag(node) {
 // Node Click
 // -------------------------
 async function handleNodeClick(node) {
+        if (node.userData?.isSubnode) {
+        showSubnodeDetails(node.userData.subnodeData, node.userData.parentNode);
+        return;
+    }
+
     const fullNode = (state.graphData?.nodes || []).find(n =>
         n.id === node.id || n.node_id === node.node_id || n.node_id === node.code
     ) || node;
+
+    console.log('=== NODE CLICK ===');
+    console.log('Clicked node:', fullNode);
+    console.log('Node has subnodes?', fullNode.subnodes);
+    console.log('Subnodes count:', fullNode.subnodes?.length || 0);
+    
 
     // ── DISCUSSION MODE: accumulate members one click at a time ───
     if (state.isDiscussionMode) {
@@ -127,6 +228,9 @@ async function handleNodeClick(node) {
 
     state.selectedNode = fullNode;
     flyToNode(fullNode);
+
+        // Show/hide subnodes
+    toggleSubnodes(fullNode);
 
     // ── If this is a DiscussionNode, enter isolation mode ────────────
     const nodeType = fullNode.parent_type || fullNode.node_type || '';
@@ -215,6 +319,252 @@ btn.innerText = `✨ ${data.proposals.length}`;
     }, 0);
 }
 
+const subnodeState = {
+    activeNodeId: null,
+    subnodeObjects: [], // THREE.js objects for subnodes
+    subnodeLines: []    // THREE.js lines connecting to parent
+};
+ 
+function toggleSubnodes(node) {
+    const scene = Graph.scene();
+    if (!scene) return;
+    
+    // If clicking the same node, hide subnodes
+    if (subnodeState.activeNodeId === node.id) {
+        clearSubnodes();
+        return;
+    }
+    
+    // Clear any existing subnodes
+    clearSubnodes();
+    
+    // Check if node has subnodes
+    const subnodes = node.subnodes || [];
+    if (!subnodes.length) return;
+    
+    subnodeState.activeNodeId = node.id;
+    
+    // Store subnode positions for connecting lines
+    const subnodePositions = [];
+    
+    // Create subnode visualizations
+    const angleStep = (Math.PI * 2) / subnodes.length;
+    
+    subnodes.forEach((subnode, idx) => {
+
+  const spacing = 25;
+const prevPos = idx === 0
+    ? { x: node.x, y: node.y }
+    : subnodePositions[idx - 1];
+const subnodeX = prevPos.x + spacing;
+const subnodeY = prevPos.y;
+const subnodeZ = node.z;
+        
+        // Store position for later linking
+        subnodePositions.push({ x: subnodeX, y: subnodeY, z: subnodeZ, data: subnode, idx });
+        
+        // Create subnode sphere (clickable)
+        const geometry = new THREE.SphereGeometry(3, 24, 24);
+        const material = new THREE.MeshBasicMaterial({
+            color: 0x00c8a0,
+        });
+        const sphere = new THREE.Mesh(geometry, material);
+        sphere.position.set(subnodeX, subnodeY, subnodeZ);
+        
+        // Store subnode data for click handling
+        sphere.userData = {
+            isSubnode: true,
+            parentId: node.id,
+            parentNode: node,
+            subnodeData: subnode,
+            subnodeIndex: idx
+        };
+        
+        // Make sphere clickable
+        sphere.userData.clickable = true;
+        
+        // Add to scene
+        scene.add(sphere);
+        subnodeState.subnodeObjects.push(sphere);
+        
+      
+         // 🔥 Use SAME system as main nodes
+const label = makeLabelSprite(
+    subnode.title || subnode.description?.substring(0, 40) || 'Subnode',
+    '#00c8a0'
+);
+
+label.position.set(subnodeX, subnodeY + 6, subnodeZ);
+
+scene.add(label);
+console.log('label added at:', label.position, 'scale:', label.scale);
+
+subnodeState.subnodeObjects.push(label); // ✅ just push, don't clear
+
+
+// Also make sphere clickable via Raycaster
+        sphere.userData.onClick = () => {
+            showSubnodeDetails(subnode, node);
+        };
+    });
+    
+    // Create connections between subnodes (sequential linking)
+
+    
+    // Also connect first and last to create a ring? Optional - uncomment if desired
+    
+    // Create connections from parent to each subnode (already done with lines)
+   // Connect parent to first subnode only, then chain each to the next
+subnodePositions.forEach((pos, i) => {
+    const from = i === 0
+        ? { x: node.x, y: node.y, z: node.z }  // parent → first
+        : subnodePositions[i - 1];               // previous subnode → this one
+
+    const lineMaterial = new THREE.LineBasicMaterial({
+        color: 0x00c8a0,
+        opacity: 0.4,
+        transparent: true
+    });
+
+    const points = [
+        new THREE.Vector3(from.x, from.y, from.z),
+        new THREE.Vector3(pos.x, pos.y, pos.z)
+    ];
+
+    const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+    const line = new THREE.Line(lineGeometry, lineMaterial);
+
+    scene.add(line);
+    subnodeState.subnodeLines.push(line);
+});
+}
+
+// Helper function to show subnode details
+function showSubnodeDetails(subnode, parentNode) {
+    // Remove any existing subnode modal
+    document.getElementById('subnode-details-modal')?.remove();
+    
+    const modal = document.createElement('div');
+    modal.id = 'subnode-details-modal';
+    modal.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(10, 12, 18, 0.98);
+        border: 1px solid #00c8a0;
+        border-radius: 12px;
+        padding: 24px;
+        min-width: 300px;
+        max-width: 500px;
+        max-height: 80vh;
+        overflow-y: auto;
+        z-index: 10000;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 0 40px rgba(0, 200, 160, 0.2);
+        font-family: 'DM Mono', monospace;
+    `;
+    
+    modal.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(0, 200, 160, 0.3); padding-bottom: 12px;">
+            <div style="color: #00c8a0; font-size: 11px; font-weight: 600; letter-spacing: 0.05em;">SUBNODE</div>
+            <button id="close-subnode-modal" style="background: none; border: none; color: #445070; cursor: pointer; font-size: 18px;">✕</button>
+        </div>
+        <div style="margin-bottom: 16px;">
+            <div style="color: #c8d0e0; font-size: 14px; font-weight: 600; margin-bottom: 8px;">${escapeHtml(subnode.title || 'Untitled')}</div>
+            <div style="color: #8e99b3; font-size: 12px; line-height: 1.6; white-space: pre-wrap;">${escapeHtml(subnode.description || 'No description')}</div>
+        </div>
+        <div style="background: rgba(0, 200, 160, 0.05); border-radius: 6px; padding: 12px; margin-top: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: #445070; font-size: 10px;">Strength:</span>
+                <span style="color: #00c8a0; font-size: 11px; font-weight: 600;">${subnode.strength || 50}%</span>
+            </div>
+            <div style="margin-top: 8px;">
+                <div style="background: rgba(0, 200, 160, 0.1); height: 4px; border-radius: 2px; overflow: hidden;">
+                    <div style="background: #00c8a0; width: ${subnode.strength || 50}%; height: 100%;"></div>
+                </div>
+            </div>
+        </div>
+        <div style="margin-top: 20px; display: flex; gap: 12px; justify-content: flex-end;">
+            <button id="close-subnode-btn" style="background: transparent; border: 1px solid #445070; color: #8e99b3; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-family: 'DM Mono', monospace; font-size: 11px;">Close</button>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    const closeModal = () => modal.remove();
+    document.getElementById('close-subnode-modal')?.addEventListener('click', closeModal);
+    document.getElementById('close-subnode-btn')?.addEventListener('click', closeModal);
+    
+    // Close on backdrop click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+    });
+}
+
+// Helper function to escape HTML
+function escapeHtml(str) {
+    if (!str) return '';
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function clearSubnodes() {
+    const scene = Graph.scene();
+    if (!scene) return;
+    
+    // Remove all subnode objects
+    subnodeState.subnodeObjects.forEach(obj => {
+        scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+        }
+    });
+    
+    // Remove all lines
+    subnodeState.subnodeLines.forEach(line => {
+        scene.remove(line);
+        if (line.geometry) line.geometry.dispose();
+        if (line.material) line.material.dispose();
+    });
+    
+    subnodeState.subnodeObjects = [];
+    subnodeState.subnodeLines = [];
+    subnodeState.activeNodeId = null;
+}
+ 
+// Helper function to wrap text for canvas rendering
+function wrapText(context, text, maxWidth) {
+    const words = text.split(' ');
+    const lines = [];
+    let currentLine = '';
+    
+    words.forEach(word => {
+        const testLine = currentLine + (currentLine ? ' ' : '') + word;
+        const metrics = context.measureText(testLine);
+        
+        if (metrics.width > maxWidth && currentLine) {
+            lines.push(currentLine);
+            currentLine = word;
+        } else {
+            currentLine = testLine;
+        }
+    });
+    
+    if (currentLine) lines.push(currentLine);
+    return lines;
+}
+ 
+// Expose for external use
+window.toggleSubnodes = toggleSubnodes;
+window.clearSubnodes = clearSubnodes;
+
 function handleLinkClick(link) {
     // Enrich with source/target node names from graphData
     const nodes = state.graphData?.nodes || [];
@@ -246,18 +596,17 @@ async function refreshGraph() {
     assignVersionZ(data.nodes, data.links);
 
     data.nodes.forEach(node => {
-        // Z rule (priority order):
-        //   1. HAS_VERSION chain depth  (set by assignVersionZ as node.version_z)
-        //   2. Abstraction level        (L1=-120 … L5=+120, step 60)
-        //   3. Zero                     (fallback)
-        // Saved DB z values are intentionally ignored — abstraction level is the source of truth.
-        const lvl = node.abstraction_level != null ? parseInt(node.abstraction_level) : null;
-        node.z = zFromAbstractionLevel(lvl) ?? node.version_z ?? 0;
+        // Z = time. Derived from epoch/valid_from via epochToZ().
+        // HAS_VERSION chain depth takes priority via version_z.
+        node.z = epochToZ(node) || node.version_z || 0;
 
 
         if (node.x != null && node.y != null) {
             node.fx = node.x;
             node.fy = node.y;
+            node.fz = node.z;  // Also pin Z if needed
+            node.pinned = true;
+
         } else {
             const angle = Math.random() * 2 * Math.PI;
             const r     = 80 + Math.random() * 120;
@@ -292,83 +641,278 @@ async function refreshGraph() {
         flyToNode(node, 3000);
     });
 
-    // -------------------------
-    // Abstraction Level Filter
-    // -------------------------
-    const slider = document.getElementById('time-slider');
-    const timeLabel = document.getElementById('current-time');
-    const btnShowAll = document.getElementById('btn-show-all-levels');
+    // ── Time Controller: Chronological + Thick Time modes ─────────────────────────
+    const slider       = document.getElementById('time-slider');
+    const timeLabel    = document.getElementById('current-time');
+    const btnShowAll   = document.getElementById('btn-show-all-levels');
     const levelBtnLabel = document.getElementById('level-btn-label');
+    const btnThickMode  = document.getElementById('btn-thick-time-mode');
+
+    // ── Thick Time skoru hesapla ──────────────────────────────────────────────
+    // Counts layer depth for each node (0-7).
+    // Drift supplement, HAUNTS/OPENS_INTO relations, comments add score.
+    function computeThickScores(nodes, links) {
+        const scores = {};
+        // Drift log verisi
+        let driftEntries = [];
+        let driftComments = {};
+        try {
+            driftEntries  = JSON.parse(localStorage.getItem('drift_log_entries') || '[]');
+            driftComments = JSON.parse(localStorage.getItem('drift_node_comments') || '{}');
+        } catch {}
+
+        // Supplement map: nodeId → crystal
+        const supplementMap = {};
+        for (const entry of driftEntries) {
+            for (const crystal of (entry.crystals || [])) {
+                if (crystal.nodeId) supplementMap[crystal.nodeId] = crystal;
+            }
+        }
+
+        // Relation type map: nodeId → array of relation types
+        const relTypeMap = {};
+        for (const link of links) {
+            const srcId = link.source?.id ?? link.source;
+            const tgtId = link.target?.id ?? link.target;
+            const type  = (link.rel_type || '').toUpperCase();
+            if (!relTypeMap[srcId]) relTypeMap[srcId] = [];
+            if (!relTypeMap[tgtId]) relTypeMap[tgtId] = [];
+            relTypeMap[srcId].push(type);
+            relTypeMap[tgtId].push(type);
+        }
+
+        for (const node of nodes) {
+            const nid = node.id || node.node_id;
+            let score = 1; // baseline — theoretical content exists
+
+            // Supplement: crystallized from drift record
+            if (supplementMap[nid]) {
+                score += 1;
+
+                // Does the supplement open into another historicity?
+                const crystal = supplementMap[nid];
+                if (crystal.status === 'flowing' || crystal.ontologyStatus === 'flowing') score += 1;
+            }
+
+            // Dynamic relations
+            const relTypes = relTypeMap[nid] || [];
+            if (relTypes.includes('HAUNTS'))     score += 1;
+            if (relTypes.includes('OPENS_INTO')) score += 1;
+            if (relTypes.includes('SEDIMENTS_INTO')) score += 1;
+
+            // Deconstructed node
+            if (node.ontology_status === 'deconstructed') score += 1;
+
+            // Yorumlar
+            const comments = driftComments[nid] || [];
+            if (comments.some(c => c.type === 'inner')) score += 1;
+            if (comments.some(c => c.type === 'outer')) score += 1;
+
+            scores[nid] = Math.min(score, 7);
+        }
+        return scores;
+    }
+
+    // Thick time scores — always computed
+    const thickScores = computeThickScores(data.nodes, data.links);
+    const maxThick    = Math.max(1, ...Object.values(thickScores));
+
+    // Epoch range
+    const epochs   = data.nodes
+        .map(n => n.epoch ?? n.valid_from ?? null)
+        .filter(e => e != null).map(Number);
+    const hasEpochs = epochs.length > 0;
+    const minEpoch  = hasEpochs ? Math.min(...epochs) : 0;
+    const maxEpoch  = hasEpochs ? Math.max(...epochs) : 0;
+
+    // Shared render helper
+    function _renderFiltered(filteredNodes) {
+        filteredNodes.forEach(n => { 
+            n.z = epochToZ(n) || n.version_z || 0;
+            // PRESERVE fx/fy settings
+            if (n.x != null && n.y != null) {
+                n.fx = n.x;
+                n.fy = n.y;
+                n.fz = n.z;
+            }
+        });
+        const filteredIds = new Set(filteredNodes.map(n => n.id));
+        const filteredLinks = data.links.filter(l => {
+            const s = l.source?.id ?? l.source;
+            const t = l.target?.id ?? l.target;
+            return filteredIds.has(s) && filteredIds.has(t);
+        });
+       
+        // 🔥 ADD THIS BLOCK BEFORE graphData
+const newNodes = [];
+const newLinks = [];
+
+filteredNodes.forEach(node => {
+    if (!node.subnodes) return;
+
+    node.subnodes.forEach((sub, i) => {
+        const subId = `${node.id}_sub_${i}`;
+
+        newNodes.push({
+            id: subId,
+            name: sub.label || "subnode",
+            parent_type: "Subnode",
+
+            // position near parent
+            x: node.x + (Math.random() - 0.5) * 20,
+            y: node.y + (Math.random() - 0.5) * 20,
+            z: node.z
+        });
+
+        newLinks.push({
+            source: node.id,
+            target: subId,
+            rel_type: "HAS_SUBNODE",
+            weight: 0.3
+        });
+    });
+});
+
+// merge into existing graph
+const finalNodes = [...filteredNodes, ...newNodes];
+const finalLinks = [...filteredLinks, ...newLinks];
+
+console.log("FINAL NODES", finalNodes);
+
+        // Load data into graph
+        Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
+        
+        // CRITICAL: Pin each node after loading
+        filteredNodes.forEach(n => {
+            Graph.moveNodeZ(n.id, n.z);
+            if (n.x != null && n.y != null) {
+                Graph.pinNode(n.id);
+            }
+        });
+    }
 
     if (slider && btnShowAll) {
-        // Preserve slider position and toggle state across refreshGraph calls
-        if (!slider._levelFilterInit) {
-            slider.value = 1;
-            slider._levelFilterInit = true;
-            slider._showAllUpTo = false;
+        // Mod durumunu slider DOM'unda sakla — refreshGraph'tan sonra korunur
+        if (!slider._timeInit) {
+            slider._timeInit = true;
+            slider._mode     = 'chrono';
+            slider._showAll  = true;
         }
 
-        let showAllUpTo = slider._showAllUpTo ?? false;
-        let currentLevel = parseInt(slider.value) || 1;
+        let mode    = slider._mode;
+        let showAll = slider._showAll;
 
-        function applyLevelFilter() {
-            // Persist toggle state on the DOM element so it survives refreshGraph
-            slider._showAllUpTo = showAllUpTo;
-
-            timeLabel.innerText = `L${currentLevel}`;
-            if (levelBtnLabel) levelBtnLabel.textContent = currentLevel;
-            btnShowAll.textContent = showAllUpTo
-                ? `Show only L${currentLevel}`
-                : `Show all ≤ L${currentLevel}`;
-            btnShowAll.classList.toggle('active', showAllUpTo);
-
-            const filteredNodes = data.nodes.filter(n => {
-                if (n.abstraction_level == null) return true; // always show unlevelled nodes
-                const lvl = parseInt(n.abstraction_level);
-                if (showAllUpTo) return lvl <= currentLevel;
-                return lvl === currentLevel;
-            });
-
-            // Re-apply Z before rendering — graphData() rebuilds the scene from scratch
-            // and needs correct z values on every node in the filtered set.
-            filteredNodes.forEach(node => {
-                const lvl = node.abstraction_level != null ? parseInt(node.abstraction_level) : null;
-                node.z = zFromAbstractionLevel(lvl) ?? node.version_z ?? 0;
-
-            });
-
-            const filteredNodeIds = new Set(filteredNodes.map(n => n.id));
-            const filteredLinks = data.links.filter(l => {
-                const srcId = l.source?.id ?? l.source;
-                const tgtId = l.target?.id ?? l.target;
-                return filteredNodeIds.has(srcId) && filteredNodeIds.has(tgtId);
-            });
-
-Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
-
-            filteredNodes.forEach(node => {
-                Graph.moveNodeZ(node.id, node.z);
-            });
+        function _updateModeBtn() {
+            if (!btnThickMode) return;
+            if (mode === 'thick') {
+                btnThickMode.textContent       = '◈ Thick Time';
+                btnThickMode.style.color       = 'rgba(180,140,255,0.85)';
+                btnThickMode.style.borderColor = 'rgba(180,140,255,0.35)';
+                btnThickMode.classList.add('active');
+            } else {
+                btnThickMode.textContent       = '◈ Chronological';
+                btnThickMode.style.color       = '#8896b8';
+                btnThickMode.style.borderColor = 'rgba(136,150,184,0.3)';
+                btnThickMode.classList.remove('active');
+            }
         }
 
-        slider.min = 1;
-        slider.max = 5;
-        currentLevel = parseInt(slider.value);
+        function _setSliderRange() {
+            if (mode === 'chrono') {
+                slider.min   = hasEpochs ? minEpoch : 0;
+                slider.max   = hasEpochs ? maxEpoch : 0;
+                slider.step  = 1;
+                slider.disabled = !hasEpochs;
+            } else {
+                slider.min      = 1;
+                slider.max      = maxThick;
+                slider.step     = 1;
+                slider.disabled = false;
+            }
+        }
 
-        slider.oninput = (e) => {
-            currentLevel = parseInt(e.target.value);
-            applyLevelFilter();
-        };
+        function applyFilter() {
+            slider._mode    = mode;
+            slider._showAll = showAll;
+
+            const val = parseInt(slider.value) || 0;
+
+            if (mode === 'chrono') {
+                if (!hasEpochs) {
+                    // No epochs — show all, slider inactive
+                    if (timeLabel) timeLabel.innerText = '—';
+                    if (levelBtnLabel) levelBtnLabel.textContent = '—';
+                    btnShowAll.textContent = 'All';
+                    _renderFiltered(data.nodes);
+                    return;
+                }
+
+                if (timeLabel) timeLabel.innerText = val;
+                if (levelBtnLabel) levelBtnLabel.textContent = val;
+                btnShowAll.textContent = showAll ? `≤ ${val}` : `= ${val}`;
+                btnShowAll.classList.toggle('active', !showAll);
+
+                const filtered = data.nodes.filter(n => {
+                    const ep = n.epoch ?? n.valid_from ?? null;
+                    if (ep == null) return true; // nodes without epoch are always visible
+                    const e = Number(ep);
+                    return showAll ? e <= val : e === val;
+                });
+                _renderFiltered(filtered);
+
+            } else {
+                // Thick zaman modu
+                const labels = ['', 'Surface', 'Trace', 'Sedimentary', 'Fissured', 'Resonant', 'Haunted', 'Thick'];
+                if (timeLabel) timeLabel.innerText = labels[val] || String(val);
+                if (levelBtnLabel) levelBtnLabel.textContent = val;
+                btnShowAll.textContent = showAll ? `≤ ${val}` : `= ${val}`;
+                btnShowAll.classList.toggle('active', !showAll);
+
+                const filtered = data.nodes.filter(n => {
+                    const nid   = n.id || n.node_id;
+                    const score = thickScores[nid] || 1;
+                    return showAll ? score <= val : score === val;
+                });
+                filtered.forEach(n => {
+                    n._thickSize = thickScores[n.id || n.node_id] || 1;
+                });
+                _renderFiltered(filtered);
+            }
+        }
+
+        // Initial values — range first, then value, then filter
+        _setSliderRange();
+        slider.value = mode === 'chrono'
+            ? (hasEpochs ? maxEpoch : 0)
+            : maxThick;
+        _updateModeBtn();
+
+        // Event handler'lar
+        slider.oninput = () => applyFilter();
 
         btnShowAll.onclick = () => {
-            showAllUpTo = !showAllUpTo;
-            applyLevelFilter();
+            showAll = !showAll;
+            applyFilter();
         };
 
-        applyLevelFilter();
+        if (btnThickMode) {
+            btnThickMode.onclick = () => {
+                mode    = mode === 'chrono' ? 'thick' : 'chrono';
+                showAll = true;
+                _setSliderRange();
+                slider.value = mode === 'chrono'
+                    ? (hasEpochs ? maxEpoch : 0)
+                    : maxThick;
+                _updateModeBtn();
+                applyFilter();
+            };
+        }
+
+        applyFilter();
+
     } else {
-        // No filter UI present — render everything
-        Graph.graphData(data);
+        // No slider DOM element — show all
+        _renderFiltered(data.nodes);
     }
 }
 
@@ -455,6 +999,26 @@ window.dispatch = async (action, payload) => {
         return result;
     }, state.graphData?.nodes || [],
        state.graphData?.links || []);
+}
+
+if (action === 'EDIT_NODE') {
+    const node = (state.graphData?.nodes || []).find(n => n.id === payload);
+    if (!node) return;
+    UI.renderEditNodeModal(node, async (data) => {
+        try {
+            const res = await fetch(`/api/nodes/${node.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const result = await res.json();
+            console.log('PATCH result:', result);
+            await refreshGraph();
+        } catch(err) {
+            console.error('EDIT_NODE error:', err);
+            throw err; // re-throw so modal catch sees it
+        }
+    });
 }
 
     if (action === 'AI_CHALLENGE') {
@@ -993,5 +1557,6 @@ if (document.readyState === 'loading') {
 } else {
     _initUI();
 }
+initSubnodeRaycaster(); // ← add this
 
 refreshGraph();

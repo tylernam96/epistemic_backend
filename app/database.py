@@ -2,18 +2,25 @@ import os
 from dotenv import load_dotenv
 from neo4j import GraphDatabase
 
-# This finds the .env file one level up from the 'app' folder
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
-URI = os.getenv("NEO4J_URI")
+URI  = os.getenv("NEO4J_URI")
 USER = os.getenv("NEO4J_USER")
-PWD = os.getenv("NEO4J_PASSWORD")
+PWD  = os.getenv("NEO4J_PASSWORD")
 
-# Create the driver using the variables we just pulled
-driver = GraphDatabase.driver(URI, auth=(USER, PWD))
+driver = GraphDatabase.driver(
+    URI,
+    auth=(USER, PWD),
+    # Check the connection is still alive before using it.
+    # If it dropped (idle timeout), the driver reopens it automatically.
+    liveness_check_timeout=30,
+    # How long to keep retrying a failed transaction before giving up (seconds).
+    max_transaction_retry_time=15,
+    # Keep connections warm — Aura closes idle connections after ~2 minutes.
+    keep_alive=True,
+)
 
 def get_db():
     return driver.session()
 
-# Simple debug print to verify it's not localhost
 print(f"--- Connecting to: {URI} ---")

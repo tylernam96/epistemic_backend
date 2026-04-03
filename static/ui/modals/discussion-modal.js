@@ -53,7 +53,7 @@ export function renderDiscussionNodeModal(selectedNodes, onSubmit) {
                     </div>
                 </div>
                 <div class="field-group">
-                    <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
+                    <label>Abstraction Level <span class="opt">(encoded as color — 1=observation … 5=axiom)</span></label>
                     <div class="slider-row">
                         <input type="range" id="disc-abstraction" min="1" max="5" step="1" value="3">
                         <span id="disc-abstraction-val" style="color:#e85090;width:90px;font-size:10px;flex-shrink:0;">3 — Hypothesis</span>
