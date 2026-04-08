@@ -11,6 +11,10 @@ PWD  = os.getenv("NEO4J_PASSWORD")
 driver = GraphDatabase.driver(
     URI,
     auth=(USER, PWD),
+    max_connection_lifetime=3600,       # ← drop connections before Neo4j kills them
+    max_connection_pool_size=50,
+    connection_acquisition_timeout=30,
+
     # Check the connection is still alive before using it.
     # If it dropped (idle timeout), the driver reopens it automatically.
     liveness_check_timeout=30,

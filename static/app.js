@@ -7,12 +7,35 @@ import * as THREE from 'https://unpkg.com/three@0.152.0/build/three.module.js';
 // Year format (>1900): (year - 2000) * 40  →  2000=0, 2010=400, 2020=800
 // Period format (small number): period * 80
 function epochToZ(node) {
-    const epoch = node.epoch ?? node.valid_from ?? null;
-    if (epoch == null) return 0;
-    const e = Number(epoch);
+    // Prefer explicit epoch (user-set year) over valid_from (unix timestamp)
+    const raw = node.epoch ?? node.valid_from ?? null;
+    if (raw == null) return 0;
+    const e = Number(raw);
     if (isNaN(e)) return 0;
-    return e > 1900 ? (e - 2000) * 40 : e * 80;
+
+    // If it looks like a year (1000–2200), treat it as a year directly
+    if (e >= 1000 && e <= 2200) {
+        return (e - 1900) * 200;
+    }
+
+    // It's a unix timestamp — convert to year first
+    const year = new Date(
+        e > 1e10 ? e : e * 1000  // handle both ms and seconds
+    ).getFullYear();
+
+    if (year >= 1000 && year <= 2200) {
+        return (year - 1900) * 200;
+    }
+
+    return 0;
 }
+
+const _cache = {
+    snapshots: null,
+    snapshotsGraphId: null,
+    snapshotsTTL: 0,
+};
+const SNAPSHOT_TTL_MS = 30_000; // 30 seconds
 
 const state = {
     selectedNode: null,
@@ -48,35 +71,33 @@ const Graph = createGraph(
 );
 window.__graph = Graph; // debug access
 window.__state = state;
+initSubnodeRaycaster(); // ← add this
 
 function initSubnodeRaycaster() {
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
-    const canvas = document.getElementById('3d-graph').querySelector('canvas');
+    const canvas = document.getElementById('3d-graph');
 
     canvas.addEventListener('click', (e) => {
-        // Find camera lazily on each click (available after graph loads)
-        let camera;
-        Graph.scene().traverse(obj => { if (obj.isCamera) camera = obj; });
-        if (!camera) return;
-
         const rect = canvas.getBoundingClientRect();
         mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
         mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
 
-        raycaster.setFromCamera(mouse, camera);
+        raycaster.setFromCamera(mouse, Graph.camera());
 
         const clickableSpheres = subnodeState.subnodeObjects.filter(
             o => o.isMesh && o.userData?.isSubnode
         );
-        console.log('clickable spheres:', clickableSpheres.length);
+            console.log('clickable spheres:', clickableSpheres.length);
+
         const hits = raycaster.intersectObjects(clickableSpheres, false);
-        console.log('hits:', hits.length);
+           console.log('hits:', hits.length);
+
         if (hits.length) {
             hits[0].object.userData.onClick?.();
             e.stopPropagation();
         }
-    });
+    }, );
 }
 // -------------------------
 // Fly To Node
@@ -244,11 +265,13 @@ async function handleNodeClick(node) {
     const neighbors = await response.json();
 
     UI.renderNodeInspector(fullNode, neighbors, (neighborStub) => {
+        setTimeout(() => addShapeControlsToInspector(fullNode), 100);
         const fullNeighbor = (state.graphData?.nodes || []).find(n =>
             n.node_id === neighborStub.code
         ) || neighborStub;
         handleNodeClick(fullNeighbor);
     });
+
         setTimeout(() => {
         const btn = document.getElementById('btn-propose-relations');
         if (!btn) return;
@@ -316,6 +339,9 @@ btn.innerText = `✨ ${data.proposals.length}`;
                 btn.style.opacity = 1;
             }
         };
+    setTimeout(() => addShapeControlsToInspector(fullNode), 50);
+
+
     }, 0);
 }
 
@@ -596,24 +622,39 @@ async function refreshGraph() {
     assignVersionZ(data.nodes, data.links);
 
     data.nodes.forEach(node => {
-        // Z = time. Derived from epoch/valid_from via epochToZ().
-        // HAS_VERSION chain depth takes priority via version_z.
-        node.z = epochToZ(node) || node.version_z || 0;
+        // Z rule: if the node has an epoch/valid_from set by the user, that ALWAYS
+        // determines Z — regardless of any stored z in the DB. The stored z may be
+        // stale (from before the epoch was set, or from a random scatter).
+        // Only fall back to stored node.z when there is genuinely no epoch.
+        const epochZ = epochToZ(node);   // returns 0 when no epoch exists
+        const hasEpoch = (node.epoch ?? node.valid_from) != null;
 
+        if (hasEpoch) {
+            node.z = epochZ;             // epoch always wins
+        } else if (node.version_z != null) {
+            node.z = node.version_z;     // HAS_VERSION chain depth
+        } else if (node.z != null) {
+            // keep stored z (user dragged it to a specific Z manually)
+        } else {
+            node.z = 0;
+        }
 
         if (node.x != null && node.y != null) {
             node.fx = node.x;
             node.fy = node.y;
-            node.fz = node.z;  // Also pin Z if needed
+            node.fz = node.z;  // Pin Z to prevent simulation drift
             node.pinned = true;
 
         } else {
+            // New node without a saved XY — scatter it in the XY plane only.
+            // Z remains as computed above; do NOT randomise it.
             const angle = Math.random() * 2 * Math.PI;
             const r     = 80 + Math.random() * 120;
             node.x  = r * Math.cos(angle);
             node.y  = r * Math.sin(angle);
             node.fx = node.x;
             node.fy = node.y;
+            // Leave fz unset so the simulation doesn't fight the Z value
         }
     });
 
@@ -728,8 +769,16 @@ async function refreshGraph() {
     // Shared render helper
     function _renderFiltered(filteredNodes) {
         filteredNodes.forEach(n => { 
-            n.z = epochToZ(n) || n.version_z || 0;
-            // PRESERVE fx/fy settings
+            // Same Z priority as refreshGraph: epoch > version_z > stored z > 0
+            const hasEpoch = (n.epoch ?? n.valid_from) != null;
+            if (hasEpoch) {
+                n.z = epochToZ(n);
+            } else if (n.version_z != null) {
+                n.z = n.version_z;
+            } else if (n.z == null) {
+                n.z = 0;
+            }
+            // Preserve XY pins
             if (n.x != null && n.y != null) {
                 n.fx = n.x;
                 n.fy = n.y;
@@ -743,43 +792,9 @@ async function refreshGraph() {
             return filteredIds.has(s) && filteredIds.has(t);
         });
        
-        // 🔥 ADD THIS BLOCK BEFORE graphData
-const newNodes = [];
-const newLinks = [];
-
-filteredNodes.forEach(node => {
-    if (!node.subnodes) return;
-
-    node.subnodes.forEach((sub, i) => {
-        const subId = `${node.id}_sub_${i}`;
-
-        newNodes.push({
-            id: subId,
-            name: sub.label || "subnode",
-            parent_type: "Subnode",
-
-            // position near parent
-            x: node.x + (Math.random() - 0.5) * 20,
-            y: node.y + (Math.random() - 0.5) * 20,
-            z: node.z
-        });
-
-        newLinks.push({
-            source: node.id,
-            target: subId,
-            rel_type: "HAS_SUBNODE",
-            weight: 0.3
-        });
-    });
-});
-
-// merge into existing graph
-const finalNodes = [...filteredNodes, ...newNodes];
-const finalLinks = [...filteredLinks, ...newLinks];
-
-console.log("FINAL NODES", finalNodes);
-
         // Load data into graph
+        // Subnodes are rendered as 3D spheres on-demand via toggleSubnodes()
+        // when the user clicks a node — they are not part of the force graph.
         Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
         
         // CRITICAL: Pin each node after loading
@@ -979,28 +994,68 @@ window.dispatch = async (action, payload) => {
         refreshGraph();
     }
 
-  if (action === 'ADD_NODE') {
+if (action === 'ADD_NODE') {
     UI.renderAddNodeModal(async (data, suggestionData) => {
-        const res = await fetch('/api/nodes', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...data, graph_id: getGraphId() })
-        });
-        const result = await res.json();
+        try {
+            // Use pre-computed suggestion position if already provided by the modal,
+            // otherwise scatter near existing nodes — skip the slow AI placement call here.
+            if (suggestionData?.position) {
+                data.x = suggestionData.position.x;
+                data.y = suggestionData.position.y;
+                data.z = suggestionData.position.z || 0;
+            } else if (!data.x && !data.y) {
+                // Simple scatter near centroid of existing nodes
+                const nodes = state.graphData?.nodes || [];
+                if (nodes.length > 0) {
+                    const cx = nodes.reduce((s, n) => s + (n.x || 0), 0) / nodes.length;
+                    const cy = nodes.reduce((s, n) => s + (n.y || 0), 0) / nodes.length;
+                    const angle = Math.random() * 2 * Math.PI;
+                    const r = 80 + Math.random() * 80;
+                    data.x = cx + r * Math.cos(angle);
+                    data.y = cy + r * Math.sin(angle);
+                    data.z = data.z || 0;
+                }
+            }
 
-        // After node is created, show placement explanation if we had a suggestion
-        if (suggestionData && suggestionData.explanation) {
-            setTimeout(() => {
-                UI.showPlacementExplanation(result, suggestionData);
-            }, 500);
+            // Create the node
+            const res = await fetch('/api/nodes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...data, graph_id: getGraphId() })
+            });
+
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const result = await res.json();
+
+            // Single refresh — no double-call, no position-save timeout
+            await refreshGraph();
+
+            // Fly to the new node
+            const newNode = state.graphData?.nodes.find(n => n.node_id === result.node_id);
+            if (newNode) flyToNode(newNode, 1500);
+
+            // Fire-and-forget snapshot
+// Fire-and-forget snapshot
+fetch('/api/snapshots', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+        label: `Node added: ${result.node_id}`,
+        graph_id: getGraphId()
+    })
+}).then(async (r) => {
+    console.log('Snapshot status:', r.status, await r.json()); // ← check this
+    _cache.snapshots = null;
+}).catch(err => console.warn('Snapshot failed:', err));
+            return result;
+
+        } catch (err) {
+            console.error('Node creation failed:', err);
+            alert(`Failed to create node: ${err.message}`);
+            throw err;
         }
-
-        refreshGraph();
-        return result;
-    }, state.graphData?.nodes || [],
-       state.graphData?.links || []);
+    }, state.graphData?.nodes || [], state.graphData?.links || []);
 }
-
 if (action === 'EDIT_NODE') {
     const node = (state.graphData?.nodes || []).find(n => n.id === payload);
     if (!node) return;
@@ -1251,6 +1306,39 @@ if (action === 'EDIT_NODE') {
         if (state.graphData) reflowGraph(Graph, state.graphData);
     }
 
+    // ── Timeline / Snapshot viewer ─────────────────────────────────────────────
+if (action === 'TIMELINE') {
+    try {
+        const gid = getGraphId();
+        const now = Date.now();
+
+        // Use cached snapshots if fresh and for the same workspace
+        if (
+            _cache.snapshots &&
+            _cache.snapshotsGraphId === gid &&
+            now < _cache.snapshotsTTL
+        ) {
+            showTimelinePanel(_cache.snapshots);
+            return;
+        }
+
+        const res = await fetch(`/api/snapshots?graph_id=${encodeURIComponent(gid)}`);
+        if (!res.ok) { showFlash(`Timeline error: ${res.status} ${res.statusText}`); return; }
+        const json = await res.json();
+        const snapshots = json.snapshots ?? [];
+
+        // Cache it
+        _cache.snapshots = snapshots;
+        _cache.snapshotsGraphId = gid;
+        _cache.snapshotsTTL = now + SNAPSHOT_TTL_MS;
+
+        showTimelinePanel(snapshots);
+    } catch(e) {
+        showFlash('Could not load timeline — check server logs');
+        console.error('TIMELINE error:', e);
+    }
+}
+
     if (action === 'MOVE_NODE_Z') {
         // payload = { id, z, level }
         const node = (state.graphData?.nodes || []).find(n => n.id === payload.id);
@@ -1415,6 +1503,144 @@ function showIsolationOverlay(title) {
     document.getElementById('btn-exit-isolation').onclick = exitIsolationMode;
 }
 
+// ── Timeline Visual Replay ────────────────────────────────────────────────────
+// Full-screen overlay. Snapshots are ordered oldest→newest.
+// A slider + prev/next buttons scrub through them.
+// Each snapshot is rendered as a 2D canvas minimap showing nodes + edges.
+// The user can click Restore to roll back to any snapshot.
+async function showTimelinePanel(snapshots) {
+    document.getElementById('timeline-hud')?.remove();
+    if (!snapshots.length) {
+        showFlash('No snapshots yet — add some nodes first');
+        return;
+    }
+
+    const ordered = [...snapshots].reverse(); // oldest first
+    const blobCache = {};
+    let currentIdx = 0;
+    let isTimelineActive = false;  // true while HUD is open
+    const savedGraphData = state.graphData; // restore on exit
+
+    const hud = document.createElement('div');
+    hud.id = 'timeline-hud';
+    hud.style.cssText = `
+        position:fixed;bottom:0;left:0;right:0;z-index:9500;
+        background:rgba(7,9,15,0.96);border-top:1px solid rgba(0,200,160,0.2);
+        padding:12px 20px;display:flex;flex-direction:column;gap:8px;
+        font-family:'DM Mono',monospace;backdrop-filter:blur(10px);
+    `;
+    hud.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;">
+            <span style="color:#00c8a0;font-size:10px;font-weight:600;letter-spacing:0.08em;flex-shrink:0;">TIMELINE</span>
+            <button id="tl-prev" style="background:none;border:1px solid rgba(0,200,160,0.2);color:#00c8a0;
+                border-radius:5px;padding:3px 12px;cursor:pointer;font-family:'DM Mono',monospace;font-size:12px;">◀</button>
+            <input id="tl-slider" type="range" min="0" max="${ordered.length - 1}" value="0"
+                style="flex:1;accent-color:#00c8a0;cursor:pointer;">
+            <button id="tl-next" style="background:none;border:1px solid rgba(0,200,160,0.2);color:#00c8a0;
+                border-radius:5px;padding:3px 12px;cursor:pointer;font-family:'DM Mono',monospace;font-size:12px;">▶</button>
+            <span id="tl-count" style="color:#445070;font-size:10px;min-width:50px;text-align:right;flex-shrink:0;"></span>
+            <button id="tl-restore" style="background:rgba(0,200,160,0.08);border:1px solid rgba(0,200,160,0.3);
+                color:#00c8a0;border-radius:5px;padding:3px 14px;cursor:pointer;font-family:'DM Mono',monospace;font-size:10px;flex-shrink:0;">
+                Restore</button>
+            <button id="tl-exit" style="background:none;border:none;color:#445070;cursor:pointer;font-size:18px;
+                line-height:1;padding:0 4px;flex-shrink:0;">✕</button>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;">
+            <div id="tl-label" style="color:#c8d0e0;font-size:11px;flex:1;"></div>
+            <div id="tl-date"  style="color:#445070;font-size:10px;flex-shrink:0;"></div>
+            <div id="tl-stats" style="color:#445070;font-size:10px;flex-shrink:0;"></div>
+        </div>
+    `;
+    document.body.appendChild(hud);
+    isTimelineActive = true;
+
+    async function loadSnapshot(idx) {
+        idx = Math.max(0, Math.min(ordered.length - 1, idx));
+        currentIdx = idx;
+        const snap = ordered[idx];
+
+        document.getElementById('tl-slider').value = idx;
+        document.getElementById('tl-count').textContent  = `${idx + 1} / ${ordered.length}`;
+        document.getElementById('tl-label').textContent  = snap.label || '';
+        document.getElementById('tl-date').textContent   = snap.created_at ? new Date(snap.created_at).toLocaleString() : '';
+        document.getElementById('tl-stats').textContent  = `${snap.node_count ?? '?'} nodes · ${snap.link_count ?? '?'} links`;
+        document.getElementById('tl-restore').dataset.snapId = snap.snap_id;
+
+        if (!blobCache[snap.snap_id]) {
+            document.getElementById('tl-label').textContent = 'Loading…';
+            try {
+                const res  = await fetch(`/api/snapshots/${snap.snap_id}/blob`);
+                const data = await res.json();
+                blobCache[snap.snap_id] = data.graph;
+            } catch(e) {
+                document.getElementById('tl-label').textContent = 'Failed to load snapshot';
+                return;
+            }
+            document.getElementById('tl-label').textContent = snap.label || '';
+        }
+
+        const graphData = blobCache[snap.snap_id];
+        const nodes = (graphData.nodes || []).map(n => ({
+            ...n,
+            // Compute Z same way as refreshGraph
+            z: ((n.epoch ?? n.valid_from) != null) ? epochToZ(n) : (n.version_z ?? n.z ?? 0),
+            fx: n.x ?? undefined,
+            fy: n.y ?? undefined,
+        }));
+        const links = (graphData.links || []).map(l => ({
+            ...l,
+            source: l.source?.id ?? l.source,
+            target: l.target?.id ?? l.target,
+        }));
+
+        // Load into the live scene — camera stays exactly where it is
+        Graph.graphData({ nodes, links });
+        nodes.forEach(n => { if (n.z != null) Graph.moveNodeZ(n.id, n.z); });
+    }
+
+    document.getElementById('tl-slider').oninput = e => loadSnapshot(+e.target.value);
+    document.getElementById('tl-prev').onclick   = () => loadSnapshot(currentIdx - 1);
+    document.getElementById('tl-next').onclick   = () => loadSnapshot(currentIdx + 1);
+
+    document.getElementById('tl-exit').onclick = () => {
+        hud.remove();
+        isTimelineActive = false;
+        // Restore live graph
+        if (savedGraphData) Graph.graphData(savedGraphData);
+        savedGraphData?.nodes?.forEach(n => { if (n.z != null) Graph.moveNodeZ(n.id, n.z); });
+    };
+
+    document.getElementById('tl-restore').onclick = async () => {
+        const snapId = document.getElementById('tl-restore').dataset.snapId;
+        if (!snapId || !confirm('Restore graph to this snapshot? Current state will be replaced.')) return;
+        const btn = document.getElementById('tl-restore');
+        btn.textContent = 'Restoring…'; btn.disabled = true;
+        try {
+            await fetch(`/api/rollback/${snapId}?graph_id=${encodeURIComponent(getGraphId())}`, { method: 'POST' });
+            hud.remove();
+            isTimelineActive = false;
+            await refreshGraph();
+            showFlash('Graph restored to selected snapshot');
+        } catch(e) {
+            btn.textContent = 'Restore'; btn.disabled = false;
+        }
+    };
+
+    const onKey = e => {
+        if (!isTimelineActive) return;
+        if (e.key === 'ArrowLeft')  loadSnapshot(currentIdx - 1);
+        if (e.key === 'ArrowRight') loadSnapshot(currentIdx + 1);
+        if (e.key === 'Escape')     document.getElementById('tl-exit')?.click();
+    };
+    document.addEventListener('keydown', onKey);
+    hud.addEventListener('remove', () => {
+        document.removeEventListener('keydown', onKey);
+    });
+
+    loadSnapshot(0);
+}
+
+
 function showFlash(msg) {
     const f = document.createElement('div');
     f.className = 'success-flash';
@@ -1515,6 +1741,20 @@ window.toggleLabels = () => {
     }
 };
 
+function injectTimelineBtn() {
+    if (document.getElementById('btn-timeline')) return;
+    const saveBtn = document.getElementById('btn-save-positions');
+    if (!saveBtn) return;
+    const btn = document.createElement('button');
+    btn.id          = 'btn-timeline';
+    btn.textContent = '📜 Timeline';
+    btn.title       = 'View snapshot history and restore previous graph states';
+    btn.className   = saveBtn.className;
+    btn.onclick     = () => window.dispatch('TIMELINE');
+    const anchor = document.getElementById('btn-discussion-mode') || document.getElementById('btn-toggle-labels') || saveBtn;
+    anchor.parentElement.insertBefore(btn, anchor.nextSibling);
+}
+
 function injectLabelToggleBtn() {
     if (document.getElementById('btn-toggle-labels')) return;
     const saveBtn = document.getElementById('btn-save-positions');
@@ -1543,12 +1783,140 @@ function injectDiscussionBtn() {
     anchor.parentElement.insertBefore(btn, anchor.nextSibling);
 }
 
+function addShapeControlsToInspector(node) {
+    // Wait for inspector to exist
+    const inspector = document.getElementById('node-inspector');
+    if (!inspector) {
+        console.log('Inspector not found yet');
+        return;
+    }
+    
+    // Check if controls already added
+    if (document.getElementById('shape-controls-section')) return;
+    
+    // Find where to insert - after the existing content
+    const existingContent = inspector.querySelector('.inspector-content') || inspector;
+    
+    const shapeSection = document.createElement('div');
+    shapeSection.id = 'shape-controls-section';
+    shapeSection.style.cssText = `
+        margin-top: 16px; 
+        padding-top: 12px; 
+        border-top: 1px solid rgba(0,200,160,0.2);
+        background: rgba(0,0,0,0.3);
+        border-radius: 6px;
+        padding: 12px;
+    `;
+    
+    shapeSection.innerHTML = `
+        <div style="color: #00c8a0; font-size: 10px; margin-bottom: 10px; letter-spacing: 0.05em;">🎨 CUSTOMIZE SHAPE</div>
+        
+        <div style="margin-bottom: 10px;">
+            <label style="color:#8896b8; font-size: 9px; display:block; margin-bottom:4px;">SHAPE</label>
+            <select id="shape-select" style="width:100%; background:#0a0c14; border:1px solid #1e2535; color:#c8d0e0; border-radius:4px; padding:6px; font-family:monospace; font-size:11px;">
+                <option value="sphere" ${node.shape === 'sphere' ? 'selected' : ''}>⚪ Sphere</option>
+                <option value="cube" ${node.shape === 'cube' ? 'selected' : ''}>⬛ Cube</option>
+                <option value="octahedron" ${node.shape === 'octahedron' ? 'selected' : ''}>🔶 Octahedron</option>
+                <option value="tetrahedron" ${node.shape === 'tetrahedron' ? 'selected' : ''}>🔺 Tetrahedron</option>
+                <option value="cone" ${node.shape === 'cone' ? 'selected' : ''}>📐 Cone</option>
+            </select>
+        </div>
+        
+        <div style="margin-bottom: 10px;">
+            <label style="color:#8896b8; font-size: 9px; display:block; margin-bottom:4px;">MATERIAL</label>
+            <select id="material-select" style="width:100%; background:#0a0c14; border:1px solid #1e2535; color:#c8d0e0; border-radius:4px; padding:6px; font-family:monospace; font-size:11px;">
+                <option value="matte" ${node.material === 'matte' ? 'selected' : ''}>🎨 Matte (flat)</option>
+                <option value="standard" ${node.material === 'standard' ? 'selected' : ''}>✨ Standard</option>
+                <option value="glossy" ${node.material === 'glossy' ? 'selected' : ''}>💎 Glossy (shiny)</option>
+                <option value="wireframe" ${node.material === 'wireframe' ? 'selected' : ''}>🔲 Wireframe</option>
+            </select>
+        </div>
+        
+        <div style="margin-bottom: 10px;">
+            <label style="color:#8896b8; font-size: 9px; display:block; margin-bottom:4px;">SIZE: <span id="size-value-display">${node.size || 5.6}</span></label>
+            <input type="range" id="size-slider" min="3" max="12" step="0.5" value="${node.size || 5.6}" style="width:100%; cursor:pointer;">
+            <div style="display:flex; justify-content:space-between; margin-top:4px;">
+                <span style="color:#445070; font-size:8px;">Small</span>
+                <span style="color:#445070; font-size:8px;">Large</span>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 12px;">
+            <label style="color:#8896b8; font-size: 9px; display:block; margin-bottom:4px;">CUSTOM COLOR</label>
+            <input type="color" id="color-picker" value="${node.node_color || '#00c8a0'}" style="width:100%; height:32px; background:#0a0c14; border:1px solid #1e2535; border-radius:4px; cursor:pointer;">
+        </div>
+        
+        <button id="apply-shape-btn" style="width:100%; background:#00c8a0; border:none; color:#0a0c14; border-radius:4px; padding:8px; cursor:pointer; font-family:'DM Mono',monospace; font-size:10px; font-weight:600; transition:all 0.2s;">
+            ✨ Apply & Save
+        </button>
+    `;
+    
+    existingContent.appendChild(shapeSection);
+    
+    // Size slider live update
+    const slider = shapeSection.querySelector('#size-slider');
+    const sizeDisplay = shapeSection.querySelector('#size-value-display');
+    slider.oninput = () => {
+        sizeDisplay.textContent = slider.value;
+    };
+    
+    // Apply button
+    const applyBtn = shapeSection.querySelector('#apply-shape-btn');
+    applyBtn.onclick = async () => {
+        const shape = shapeSection.querySelector('#shape-select').value;
+        const material = shapeSection.querySelector('#material-select').value;
+        const size = parseFloat(shapeSection.querySelector('#size-slider').value);
+        const node_color = shapeSection.querySelector('#color-picker').value;
+        
+        applyBtn.textContent = '💾 Saving...';
+        applyBtn.style.opacity = '0.6';
+        
+        try {
+            await fetch(`/api/nodes/${node.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ shape, material, size, node_color })
+            });
+            
+            applyBtn.textContent = '✓ Saved!';
+            applyBtn.style.background = '#00ffaa';
+            
+            // Refresh the graph to show changes
+            setTimeout(() => refreshGraph(), 500);
+            
+            setTimeout(() => {
+                applyBtn.textContent = '✨ Apply & Save';
+                applyBtn.style.background = '#00c8a0';
+                applyBtn.style.opacity = '1';
+            }, 1500);
+        } catch (err) {
+            console.error('Failed to save:', err);
+            applyBtn.textContent = '❌ Error';
+            setTimeout(() => {
+                applyBtn.textContent = '✨ Apply & Save';
+                applyBtn.style.opacity = '1';
+            }, 1500);
+        }
+    };
+}
+
+// Also expose a quick console helper
+window.quickShape = async (nodeId, shape) => {
+    await fetch(`/api/nodes/${nodeId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shape })
+    });
+    refreshGraph();
+};
+
 // Initial load — run once after the DOM is ready
 // (module scripts execute after HTML is parsed, so DOMContentLoaded
 //  may have already fired; we call directly and also register as fallback)
 function _initUI() {
     injectLabelToggleBtn();
     injectDiscussionBtn();
+    injectTimelineBtn();
     initWorkspaceSwitcher();
 }
 
@@ -1557,6 +1925,5 @@ if (document.readyState === 'loading') {
 } else {
     _initUI();
 }
-initSubnodeRaycaster(); // ← add this
 
 refreshGraph();

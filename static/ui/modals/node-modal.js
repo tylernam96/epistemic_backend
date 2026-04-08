@@ -90,22 +90,6 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                         <input type="number" id="an-z" step="any" placeholder="Z override">
                     </div>
                 </div>
-                <div class="field-group">
-                    <label>Abstraction Level <span class="opt">(1=observation … 5=axiom)</span></label>
-                    <div class="slider-row">
-                        <input type="range" id="an-abstraction" min="1" max="5" step="1" value="3">
-                        <span id="an-abstraction-val" style="color:#8896b8;width:90px;font-size:10px;flex-shrink:0;">3 — Hypothesis</span>
-                    </div>
-                </div>
-                <div class="field-group">
-                    <label>Confidence Tier <span class="opt">(drives edge distances)</span></label>
-                    <select id="an-confidence-tier">
-                        <option value="0">0 — Speculative</option>
-                        <option value="1" selected>1 — Working</option>
-                        <option value="2">2 — Provisional</option>
-                        <option value="3">3 — Confirmed</option>
-                    </select>
-                </div>
                 <div id="an-error" class="modal-error" style="display:none"></div>
             </div>
             <div class="modal-footer">
@@ -320,15 +304,6 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
     document.getElementById('add-node-cancel').onclick = close;
     modal.addEventListener('click', e => { if (e.target === modal) close(); });
 
-    const ABSTRACTION_LABELS = ['', 'Observation', 'Evidence', 'Hypothesis', 'Principle', 'Axiom'];
-    const absSlider = document.getElementById('an-abstraction');
-    const absVal    = document.getElementById('an-abstraction-val');
-    absSlider.oninput = () => {
-        const v = parseInt(absSlider.value);
-        absVal.textContent = `${v} — ${ABSTRACTION_LABELS[v]}`;
-        if (!zInput.value) zInput.placeholder = `Auto: ${(v - 3) * 60}`;
-    };
-
     document.getElementById('add-node-submit').onclick = async () => {
         const content = document.getElementById('an-content').value.trim();
         if (!content) {
@@ -359,8 +334,6 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             x:                  xv !== '' ? parseFloat(xv) : (currentSuggestion?.x ?? null),
             y:                  yv !== '' ? parseFloat(yv) : (currentSuggestion?.y ?? null),
             z:                  zv !== '' ? parseFloat(zv) : null,
-            abstraction_level:  parseInt(document.getElementById('an-abstraction').value),
-            confidence_tier:    parseInt(document.getElementById('an-confidence-tier').value),
             subnodes:           subnodes.filter(s => s.title.trim() || s.description.trim()), // Only include non-empty subnodes
         }, { ...(currentSuggestion || {}), acceptedRelations });
 

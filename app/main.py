@@ -1,18 +1,27 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional, List
 from fastapi.responses import FileResponse
-from fastapi import HTTPException
+from pydantic import BaseModel
 from typing import Optional, List
-
+from neo4j.time import DateTime
+import uuid as _uuid
+import json as _json_mod
+import json
+import zlib
 
 from .database import driver
 from .graph_service import GraphService
 from app.engines.relation_engine import RelationEngine
 from app.engines.event_engine import EventEngine
+
+def serialize_node(obj):
+    """Convert Neo4j types to JSON-serializable types."""
+    if isinstance(obj, DateTime):
+        return obj.iso_format()  # Convert Neo4j DateTime to ISO string
+    if hasattr(obj, 'isoformat'):  # Python datetime
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 app = FastAPI(title="Epistemic Engine API")
 
@@ -161,7 +170,6 @@ Return a JSON object with your analysis:
 
 Be thorough in your analysis. Look for subtle connections. If the new concept relates to existing nodes, SAY SO. Don't return empty relations unless truly unrelated."""
 
-        import google.generativeai as genai
         import json
         
         model = genai.GenerativeModel("gemini-2.5-flash")
@@ -182,37 +190,14 @@ Be thorough in your analysis. Look for subtle connections. If the new concept re
 async def fallback_placement(data: GraphAwarePlacementRequest):
     """Fallback to embedding-based placement when graph analysis fails."""
     try:
-                # Define embed_text here if it's not available globally
-        import google.generativeai as genai
         import math
-        import os
-        
-        # Configure Gemini if not already configured
-        genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-        
-        def embed_text(text: str) -> list[float]:
-            """Generate embedding for text using Gemini."""
-            try:
-                result = genai.embed_content(
-                    model="models/gemini-embedding-2-preview",
-                    content=text[:800],
-                )
-                vec = result["embedding"]
-                norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-                return [v / norm for v in vec]
-            except Exception as e:
-                print(f"Embedding generation error: {e}")
-                raise
+        import random
 
-        # Get embedding for the new content
-        embedding = embed_text(data.content)
-        
-        # Find nodes with embeddings
+        embedding = _embed_text(data.content)
+
         nodes_with_embeddings = [n for n in data.existing_nodes if n.get('embedding')]
-        
+
         if not nodes_with_embeddings:
-            # Random placement if no embeddings
-            import random
             return {
                 "position": {
                     "x": random.uniform(-200, 200),
@@ -226,39 +211,31 @@ async def fallback_placement(data: GraphAwarePlacementRequest):
                 },
                 "predicted_relations": []
             }
-        
-        # Calculate similarities
-        similarities = []
-        for node in nodes_with_embeddings:
-            sim = cosine_similarity(embedding, node['embedding'])
-            similarities.append((sim, node))
-        
-        similarities.sort(key=lambda x: -x[0])
+
+        similarities = sorted(
+            [(_cosine_sim(embedding, n['embedding']), n) for n in nodes_with_embeddings],
+            key=lambda x: -x[0]
+        )
         top_matches = similarities[:5]
-        
-        # Calculate weighted centroid
+
         total_weight = 0
         weighted_x = 0
         weighted_y = 0
-        
         for sim, node in top_matches:
             weight = max(sim, 0.3)
             weighted_x += (node.get('x', 0) or 0) * weight
             weighted_y += (node.get('y', 0) or 0) * weight
             total_weight += weight
-        
-        import random
+
         position = {
             "x": (weighted_x / total_weight) + random.uniform(-15, 15),
             "y": (weighted_y / total_weight) + random.uniform(-15, 15),
             "z": 0
         }
-        
+
         avg_sim = sum(sim for sim, _ in top_matches) / len(top_matches)
-        
-        # Ask Gemini to explain WHY each top match is similar — one focused
-        # prompt for all top matches at once to keep latency low.
         top3 = top_matches[:3]
+
         comparison_lines = "\n".join(
             f"{i+1}. \"{(n.get('content') or n.get('name') or '')[:120]}\" — cosine similarity {sim:.2f}"
             for i, (sim, n) in enumerate(top3)
@@ -285,15 +262,13 @@ Respond ONLY with a JSON array of strings, one per node, in the same order:
                 generation_config={"temperature": 0.3},
             )
             raw = explain_resp.text.strip().replace("```json", "").replace("```", "").strip()
-            import json as _j
-            reasons = _j.loads(raw)
+            reasons = _json_mod.loads(raw)
             if not isinstance(reasons, list):
                 reasons = []
         except Exception as ex:
             print(f"⚠️  Gemini reason enrichment failed: {ex}")
             reasons = []
-        
-        # Pad with generic fallback if Gemini returned fewer than expected
+
         while len(reasons) < len(top3):
             reasons.append(f"Shares conceptual territory at {top3[len(reasons)][0]:.0%} similarity")
 
@@ -306,7 +281,6 @@ Respond ONLY with a JSON array of strings, one per node, in the same order:
                 "reason": reasons[i],
             })
 
-        # Build a narrative spatial rationale from the top match
         top_label = (top3[0][1].get('content') or top3[0][1].get('name') or '')[:60] if top3 else 'existing nodes'
         spatial_rationale = (
             f"Placed near '{top_label}' and related nodes "
@@ -323,7 +297,7 @@ Respond ONLY with a JSON array of strings, one per node, in the same order:
             },
             "predicted_relations": []
         }
-        
+
     except Exception as e:
         print(f"Fallback placement error: {e}")
         import random
@@ -341,16 +315,7 @@ Respond ONLY with a JSON array of strings, one per node, in the same order:
             "predicted_relations": []
         }
 
-# Helper function for cosine similarity
-def cosine_similarity(a, b):
-    if not a or not b or len(a) != len(b):
-        return 0
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(y * y for y in b) ** 0.5
-    if norm_a == 0 or norm_b == 0:
-        return 0
-    return dot / (norm_a * norm_b)
+# Helper function for cosine similarity — canonical version is _cosine_sim() below.
 
 # --- MODELS ---
 
@@ -368,6 +333,11 @@ class NodeCreate(BaseModel):
     abstraction_level: Optional[int] = None  # 1–5: 5=axiom, 3=hypothesis, 1=observation
     confidence_tier: Optional[int] = None    # 0–3: 0=Speculative … 3=Confirmed
     subnodes: Optional[List[dict]] = []
+        # Add these new fields:
+    shape: Optional[str] = "sphere"      # sphere, cube, octahedron, tetrahedron, cone
+    material: Optional[str] = "matte"    # matte, standard, glossy, wireframe
+    size: Optional[float] = 5.6          # 3.0 to 12.0
+    node_color: Optional[str] = None     # hex color like "#ff6600"
 
 class SubnodeUpdate(BaseModel):
     id: Optional[str] = None
@@ -387,7 +357,10 @@ class NodeUpdate(BaseModel):
     confidence_tier: Optional[int] = None
     placement_note: Optional[str] = None
     subnodes: Optional[List[SubnodeUpdate]] = None
-
+    shape: Optional[str] = None
+    material: Optional[str] = None
+    size: Optional[float] = None
+    node_color: Optional[str] = None
 
 class LinkRequest(BaseModel):
     node_a: str
@@ -423,7 +396,14 @@ async def read_root():
 
 @app.get("/graph/3d-json")
 def get_graph_data(graph_id: str = "default"):
-    return GraphService.get_3d_data(graph_id=graph_id)
+    data = GraphService.get_3d_data(graph_id=graph_id)
+    # GraphService._fetch_3d_data always returns a plain dict; no Pydantic
+    # coercion needed. Strip any residual bytes values defensively.
+    data["nodes"] = [
+        {k: v for k, v in node.items() if not isinstance(v, bytes)}
+        for node in (data.get("nodes") or [])
+    ]
+    return data
 
 @app.get("/api/graphs")
 def list_graphs():
@@ -486,109 +466,169 @@ def propose_relations(req: RelationProposalRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+_PREFIX_MAP = {
+    "concept": "C", "observation": "O", "method": "M",
+    "reference": "R", "draftfragment": "D", "event": "E"
+}
+
 @app.post("/api/nodes")
 def create_node(data: NodeCreate):
-    import uuid, asyncio, threading
+    import threading
 
-    PREFIX_MAP = {
-        "concept": "C", "observation": "O", "method": "M",
-        "reference": "R", "draftfragment": "D", "event": "E"
-    }
-    prefix = PREFIX_MAP.get(data.parent_type.lower().replace(" ", ""), "N")
-
-    # --- Collision-proof node_id ---
-    # count(*) breaks when nodes are deleted or created concurrently.
-    # Instead, find the highest existing numeric index for this prefix
-    # and increment it, then fall back to a short UUID suffix on conflict.
-    with driver.session() as session:
-        existing = session.run(
-            """
-            MATCH (n) WHERE n.node_id STARTS WITH $prefix
-              AND coalesce(n.graph_id, 'default') = $graph_id
-            RETURN n.node_id AS nid
-            """,
-            {"prefix": prefix, "graph_id": data.graph_id},
-        )
-        max_n = 0
-        for rec in existing:
-            nid = rec["nid"] or ""
-            # e.g. "C14_v1" → extract "14"
-            try:
-                num = int(nid[len(prefix):].split("_")[0])
-                if num > max_n:
-                    max_n = num
-            except (ValueError, IndexError):
-                pass
-        candidate_id = f"{prefix}{max_n + 1}_v1"
-
-        # Create node; if the candidate_id is somehow taken, retry with UUID tag
-        for attempt in range(3):
-            node_id_to_use = candidate_id if attempt == 0 else f"{prefix}{max_n + 1}_{uuid.uuid4().hex[:6]}"
-            try:
-                result = session.run(
-                    """
-                    CREATE (n:Concept)
-                    SET n.content = $content,
-                        n.parent_type = $parent_type,
-                        n.node_type = $parent_type,
-                        n.node_id = $node_id,
-                        n.version_id = $node_id,
-                        n.graph_id = $graph_id,
-                        n.valid_from = $valid_from,
-                        n.valid_to = $valid_to,
-                        n.x = $x,
-                        n.y = $y,
-                        n.z = $z,
-                        n.abstraction_level = $abstraction_level,
-                        n.confidence_tier = $confidence_tier,
-                        n.embedding = [],
-                        n.created_at = datetime()
-                    RETURN elementId(n) AS id, n.node_id AS node_id
-                    """,
-                    {
-                        "content":           data.content,
-                        "parent_type":       data.parent_type,
-                        "node_id":           node_id_to_use,
-                        "graph_id":          data.graph_id,
-                        "valid_from":        data.valid_from,
-                        "valid_to":          data.valid_to,
-                        "x":                 data.x,
-                        "y":                 data.y,
-                        "z":                 data.z,
-                        "abstraction_level": data.abstraction_level,
-                        "confidence_tier":   data.confidence_tier,
-                    },
-                )
-                record = result.single()
-                node_db_id = record["id"]
-                node_id    = record["node_id"]
-                
-                print("🔥 NODE DB ID BEING USED:", node_db_id)
-
-                break
-            except Exception as e:
-                if "ConstraintValidationFailed" in str(e) and attempt < 2:
-                    continue
-                raise
-                # --- CREATE SUBNODES ---
     if data.subnodes:
-        print("🔥 SAVING SUBNODES:", data.subnodes)
+        original_count = len(data.subnodes)
+        data.subnodes = [
+            s for s in data.subnodes
+            if s and (s.get("title") or s.get("description") or s.get("content"))
+        ]
+        if original_count != len(data.subnodes):
+            print(f"Filtered out {original_count - len(data.subnodes)} empty subnodes")
 
-        GraphService.save_subnodes(node_db_id, data.subnodes)
-    # --- Generate embedding in a background thread so the HTTP response
-    #     returns immediately. The embedding will be stored within ~1-2s,
-    #     long before the user interacts with the graph again. ---
+    prefix = _PREFIX_MAP.get(data.parent_type.lower().replace(" ", ""), "N")
+
+    # Single atomic transaction: Cypher finds the max numeric suffix and creates
+    # the node in one round-trip. No Python loop, no separate read query.
+    def _create(tx):
+        result = tx.run(
+            """
+            OPTIONAL MATCH (existing)
+            WHERE existing.node_id STARTS WITH $prefix
+              AND coalesce(existing.graph_id, 'default') = $graph_id
+            WITH coalesce(
+                   max(toInteger(split(substring(existing.node_id, $plen), '_')[0])),
+                   0
+                 ) + 1 AS next_n
+            CREATE (n:Concept)
+            SET n.content           = $content,
+                n.parent_type       = $parent_type,
+                n.node_type         = $parent_type,
+                n.node_id           = $prefix + toString(next_n) + '_v1',
+                n.version_id        = $prefix + toString(next_n) + '_v1',
+                n.graph_id          = $graph_id,
+                n.valid_from        = $valid_from,
+                n.valid_to          = $valid_to,
+                n.x                 = $x,
+                n.y                 = $y,
+                n.z                 = $z,
+                n.abstraction_level = $abstraction_level,
+                n.confidence_tier   = $confidence_tier,
+                n.embedding         = [],
+                n.created_at        = datetime(),
+                n.shape             = $shape,
+                n.material          = $material,
+                n.size              = $size,
+                n.node_color        = $node_color
+            RETURN elementId(n) AS id, n.node_id AS node_id
+            """,
+            {
+                "prefix":            prefix,
+                "plen":              len(prefix),
+                "graph_id":          data.graph_id,
+                "content":           data.content,
+                "parent_type":       data.parent_type,
+                "valid_from":        data.valid_from,
+                "valid_to":          data.valid_to,
+                "x":                 data.x,
+                "y":                 data.y,
+                "z":                 data.z,
+                "abstraction_level": data.abstraction_level,
+                "confidence_tier":   data.confidence_tier,
+                "shape":             data.shape or "sphere",
+                "material":          data.material or "matte",
+                "size":              data.size or 5.6,
+                "node_color":        data.node_color,
+            },
+        )
+        return result.single()
+
+    import uuid as _uuid_mod
+    from neo4j.exceptions import ConstraintError
+
+    _base_params = {
+        "prefix":            prefix,
+        "plen":              len(prefix),
+        "graph_id":          data.graph_id,
+        "content":           data.content,
+        "parent_type":       data.parent_type,
+        "valid_from":        data.valid_from,
+        "valid_to":          data.valid_to,
+        "x":                 data.x,
+        "y":                 data.y,
+        "z":                 data.z,
+        "abstraction_level": data.abstraction_level,
+        "confidence_tier":   data.confidence_tier,
+        "shape":             data.shape or "sphere",
+        "material":          data.material or "matte",
+        "size":              data.size or 5.6,
+        "node_color":        data.node_color,
+    }
+
+    def _create_with_uuid(tx):
+        """Fallback: guaranteed-unique UUID-based node_id."""
+        result = tx.run(
+            """
+            CREATE (n:Concept)
+            SET n.content           = $content,
+                n.parent_type       = $parent_type,
+                n.node_type         = $parent_type,
+                n.node_id           = $node_id,
+                n.version_id        = $node_id,
+                n.graph_id          = $graph_id,
+                n.valid_from        = $valid_from,
+                n.valid_to          = $valid_to,
+                n.x                 = $x,
+                n.y                 = $y,
+                n.z                 = $z,
+                n.abstraction_level = $abstraction_level,
+                n.confidence_tier   = $confidence_tier,
+                n.embedding         = [],
+                n.created_at        = datetime(),
+                n.shape             = $shape,
+                n.material          = $material,
+                n.size              = $size,
+                n.node_color        = $node_color
+            RETURN elementId(n) AS id, n.node_id AS node_id
+            """,
+            {**_base_params, "node_id": f"{prefix}{_uuid_mod.uuid4().hex[:8]}"},
+        )
+        return result.single()
+
+    record = None
+    with driver.session() as session:
+        try:
+            record = session.execute_write(_create)
+        except ConstraintError:
+            # Two concurrent requests computed the same sequential ID before
+            # either committed. UUID suffix is always unique.
+            print(f"Constraint collision on {prefix} node_id — retrying with UUID suffix")
+            record = session.execute_write(_create_with_uuid)
+
+    node_db_id = record["id"]
+    node_id    = record["node_id"]
+    print(f"Node created: {node_id}")
+
+    if data.subnodes:
+        valid_subnodes = [
+            s for s in data.subnodes
+            if (s.get("title") or "").strip()
+            or (s.get("description") or "").strip()
+            or (s.get("content") or "").strip()
+        ]
+        if valid_subnodes:
+            print(f"Saving {len(valid_subnodes)} valid subnodes")
+            GraphService.save_subnodes(node_db_id, valid_subnodes)
+
     def _store_embedding(db_id: str, text: str, nid: str):
         try:
-            emb = _embed_text(text)
+            emb = [float(v) for v in _embed_text(text)]
             with driver.session() as s:
                 s.run(
                     "MATCH (n) WHERE elementId(n) = $id SET n.embedding = $emb",
                     {"id": db_id, "emb": emb},
                 )
-            print(f"✅ Embedding stored for {nid}")
+            print(f"Embedding stored for {nid}")
         except Exception as ex:
-            print(f"⚠️  Embedding failed for {nid}: {ex}")
+            print(f"Embedding failed for {nid}: {ex}")
 
     threading.Thread(
         target=_store_embedding,
@@ -598,7 +638,11 @@ def create_node(data: NodeCreate):
 
     return {"status": "created", "id": node_db_id, "node_id": node_id}
 
-
+def normalize_embedding(embedding):
+    if not embedding:
+        return []
+    return [float(v) for v in embedding]
+ 
 # ── Discussion Node creation ──────────────────────────────────────────────
 @app.post("/api/discussion-nodes")
 def create_discussion_node(data: DiscussionNodeCreate):
@@ -617,59 +661,46 @@ def create_discussion_node(data: DiscussionNodeCreate):
     if len(data.member_ids) < 2:
         raise HTTPException(status_code=422, detail="at least 2 member_ids required")
 
-    with driver.session() as session:
-        # ── Collision-proof node_id for DiscussionNode (prefix "DN") ────────
-        existing = session.run(
+    def _create_discussion(tx):
+        result = tx.run(
             """
-            MATCH (n) WHERE n.node_id STARTS WITH 'DN'
-              AND coalesce(n.graph_id, 'default') = $graph_id
-            RETURN n.node_id AS nid
-            """,
-            {"graph_id": data.graph_id},
-        )
-        max_n = 0
-        for rec in existing:
-            nid = rec["nid"] or ""
-            try:
-                num = int(nid[2:].split("_")[0])
-                if num > max_n:
-                    max_n = num
-            except (ValueError, IndexError):
-                pass
-        candidate_id = f"DN{max_n + 1}_v1"
-
-        # ── Create the discussion node ────────────────────────────────────
-        result = session.run(
-            """
+            OPTIONAL MATCH (existing)
+            WHERE existing.node_id STARTS WITH 'DN'
+              AND coalesce(existing.graph_id, 'default') = $graph_id
+            WITH coalesce(
+                   max(toInteger(split(substring(existing.node_id, 2), '_')[0])),
+                   0
+                 ) + 1 AS next_n
             CREATE (d:Concept)
-            SET d.content          = $title,
-                d.parent_type      = 'DiscussionNode',
-                d.node_type        = 'DiscussionNode',
-                d.node_id          = $node_id,
-                d.version_id       = $node_id,
-                d.context          = $context,
-                d.members          = $members,
-                d.graph_id         = $graph_id,
+            SET d.content           = $title,
+                d.parent_type       = 'DiscussionNode',
+                d.node_type         = 'DiscussionNode',
+                d.node_id           = 'DN' + toString(next_n) + '_v1',
+                d.version_id        = 'DN' + toString(next_n) + '_v1',
+                d.context           = $context,
+                d.members           = $members,
+                d.graph_id          = $graph_id,
                 d.abstraction_level = $abstraction_level,
-                d.x                = $x,
-                d.y                = $y,
-                d.embedding        = [],
-                d.created_at       = datetime()
+                d.x                 = $x,
+                d.y                 = $y,
+                d.embedding         = [],
+                d.created_at        = datetime()
             RETURN elementId(d) AS id, d.node_id AS node_id
             """,
             {
                 "title":             data.title.strip(),
-                "node_id":           candidate_id,
                 "context":           data.context or "",
                 "members":           data.member_ids,
                 "graph_id":          data.graph_id,
                 "abstraction_level": data.abstraction_level,
-                # Position: if caller didn't provide one, compute centroid of members
                 "x": data.x,
                 "y": data.y,
             },
         )
-        rec = result.single()
+        return result.single()
+
+    with driver.session() as session:
+        rec = session.execute_write(_create_discussion)
         disc_id  = rec["id"]
         disc_nid = rec["node_id"]
 
@@ -820,6 +851,8 @@ class EmbeddingStore(BaseModel):
 @app.post("/api/nodes/{node_id}/embedding")
 def store_node_embedding(node_id: str, payload: EmbeddingStore):
     """Store a pre-computed embedding vector on an existing node."""
+    embedding = normalize_embedding(payload.embedding)  # ← Use helper
+
     query = """
     MATCH (n) WHERE elementId(n) = $node_id
     SET n.embedding = $embedding
@@ -853,6 +886,8 @@ async def backfill_embeddings():
             continue
         try:
             embedding = _embed_text(content)
+            embedding = normalize_embedding(embedding)  # ← Use helper
+
             # Write phase — separate session per node to avoid long-lived transactions
             with driver.session() as session:
                 session.run(
@@ -897,6 +932,51 @@ def get_embedding(data: EmbedRequest):
 class ChallengeRequest(BaseModel):
     content: str
     parent_type: Optional[str] = None
+
+@app.get("/api/nodes/embeddings")
+def get_node_embeddings(graph_id: str = "default"):
+    """Get minimal node data with embeddings for placement suggestions.
+    This is separate from /graph/3d-json to keep the main graph response fast.
+    """
+    try:
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (n:Concept)
+                WHERE coalesce(n.graph_id, 'default') = $graph_id
+                  AND NOT n:Subnode
+                  AND n.embedding IS NOT NULL
+                  AND size(n.embedding) > 0
+                RETURN n.node_id AS node_id,
+                       n.content AS content,
+                       n.parent_type AS parent_type,
+                       n.x AS x,
+                       n.y AS y,
+                       n.z AS z,
+                       n.embedding AS embedding
+                LIMIT 500
+            """, {"graph_id": graph_id})
+            
+            nodes = []
+            for r in result:
+                nodes.append({
+                    "id": r["node_id"],
+                    "node_id": r["node_id"],
+                    "content": r["content"] or "",
+                    "parent_type": r["parent_type"] or "Concept",
+                    "x": r["x"] if r["x"] is not None else 0,
+                    "y": r["y"] if r["y"] is not None else 0,
+                    "z": r["z"] if r["z"] is not None else 0,
+                    "embedding": r["embedding"] or []
+                })
+            
+            print(f"📊 Embeddings endpoint: returning {len(nodes)} nodes with embeddings")
+            return {"nodes": nodes}
+            
+    except Exception as e:
+        print(f"❌ Error in /api/nodes/embeddings: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"nodes": [], "error": str(e)}
 
 @app.post("/api/ai/challenge")
 def ai_challenge(data: ChallengeRequest):
@@ -1133,3 +1213,296 @@ def ai_analyze(data: AIAnalyzeRequest):
         "source_text": text[:300],
         "fragments": fragments,   # core_concept, observation, counter_argument
     }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SNAPSHOT / TIMELINE / ROLLBACK
+#
+# A GraphSnapshot is a lightweight Neo4j node that stores a full JSON blob of
+# the graph at a point in time.  It is NOT part of the graph topology — it sits
+# beside it as a plain :GraphSnapshot node.
+#
+# POST /api/snapshots          → create a snapshot of the current graph
+# GET  /api/snapshots          → list all snapshots (timeline)
+# POST /api/rollback/{snap_id} → restore graph to a snapshot
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+
+class SnapshotCreate(BaseModel):
+    label: str = ""          # human-readable description, e.g. "Node C14 added"
+    graph_id: str = "default"
+
+@app.post("/api/snapshots")
+def create_snapshot(data: SnapshotCreate):
+    import uuid
+    from neo4j.time import DateTime
+
+    def serialize_datetime(obj):
+        if isinstance(obj, DateTime):
+            return obj.iso_format()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+    snap_id = str(uuid.uuid4())
+    
+    # Get current graph data
+    graph_data = GraphService.get_3d_data(graph_id=data.graph_id)
+    
+    # Convert to JSON string
+    json_str = json.dumps({
+        "nodes": graph_data.get("nodes", []),
+        "links": graph_data.get("links", [])
+    }, default=serialize_datetime)
+    
+    # Compress the blob (reduces size by 70-80%)
+    compressed_blob = zlib.compress(json_str.encode('utf-8'))
+    
+    node_count = len(graph_data.get("nodes", []))
+    link_count = len(graph_data.get("links", []))
+    
+    original_size = len(json_str)
+    compressed_size = len(compressed_blob)
+    print(f"📸 Snapshot {snap_id}: {original_size} -> {compressed_size} bytes ({100 - (compressed_size/original_size*100):.0f}% smaller)")
+    
+    def _create_snapshot(tx):
+        tx.run("""
+            CREATE (s:GraphSnapshot {
+                snap_id: $snap_id,
+                graph_id: $graph_id,
+                label: $label,
+                blob: $blob,
+                node_count: $node_count,
+                link_count: $link_count,
+                created_at: datetime()
+            })
+        """, snap_id=snap_id, graph_id=data.graph_id, 
+            label=data.label or f"Snapshot {snap_id[:8]}",
+            blob=compressed_blob,  # Store compressed
+            node_count=node_count, 
+            link_count=link_count)
+    
+    with driver.session() as session:
+        session.execute_write(_create_snapshot)
+    
+    return {"status": "created", "snap_id": snap_id}
+
+@app.get("/api/snapshots/{snap_id}/blob")
+def get_snapshot_blob(snap_id: str):
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (s:GraphSnapshot {snap_id: $snap_id}) RETURN s.blob AS blob, s.label AS label, toString(s.created_at) AS created_at",
+            {"snap_id": snap_id}
+        )
+        record = result.single()
+    if not record:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    
+    blob_data = record["blob"]
+    
+    # Check if blob is compressed (bytes) or string
+    try:
+        if isinstance(blob_data, bytes):
+            # Decompress the blob
+            decompressed = zlib.decompress(blob_data)
+            graph = json.loads(decompressed.decode('utf-8'))
+        else:
+            # Old format - string
+            graph = json.loads(blob_data) if blob_data else {"nodes": [], "links": []}
+    except Exception as e:
+        print(f"Error decompressing blob: {e}")
+        graph = {"nodes": [], "links": []}
+
+    return {
+        "snap_id": snap_id,
+        "label": record["label"],
+        "created_at": record["created_at"],
+        "graph": graph,
+    }
+
+@app.get("/api/snapshots")
+def list_snapshots(graph_id: str = "default"):
+    from neo4j.exceptions import SessionExpired, ServiceUnavailable
+    from neo4j.time import DateTime  # ← make sure this is here
+
+    def _fetch(tx):
+        result = tx.run(
+            """
+            MATCH (s:GraphSnapshot {graph_id: $graph_id})
+            RETURN s.snap_id    AS snap_id,
+                   s.label      AS label,
+                   s.node_count AS node_count,
+                   s.link_count AS link_count,
+                   s.created_at AS created_at
+            ORDER BY s.created_at DESC
+            """,
+            graph_id=graph_id
+        )
+        snapshots = []
+        for r in result:
+            created_at = r["created_at"]
+            if isinstance(created_at, DateTime):
+                created_at = created_at.iso_format()
+            snapshots.append({
+                "snap_id": r["snap_id"],
+                "label": r["label"],
+                "node_count": r["node_count"],
+                "link_count": r["link_count"],
+                "created_at": created_at,
+            })
+        return snapshots
+
+    try:
+        with driver.session() as session:
+            snapshots = session.execute_read(_fetch)
+        return {"snapshots": snapshots}
+    except (SessionExpired, ServiceUnavailable) as e:
+        print(f"⚠️ Neo4j connection error in list_snapshots: {e}")
+        return {"snapshots": []}
+
+
+
+@app.get("/api/debug/unnamed")
+def debug_unnamed_nodes(graph_id: str = "default"):
+    """Find nodes with no content/name — helps identify phantom nodes."""
+    with driver.session() as session:
+        result = session.run(
+            """
+            MATCH (n)
+            WHERE coalesce(n.graph_id, 'default') = $graph_id
+              AND (n.content IS NULL OR trim(n.content) = '')
+              AND NOT n:GraphSnapshot
+            RETURN elementId(n) AS id,
+                   labels(n)    AS labels,
+                   n            AS props
+            LIMIT 50
+            """,
+            {"graph_id": graph_id}
+        )
+        return {"nodes": [{"id": r["id"], "labels": r["labels"], "props": dict(r["props"])} for r in result]}
+
+@app.post("/api/rollback/{snap_id}")
+def rollback_to_snapshot(snap_id: str, graph_id: str = "default"):
+    """
+    Restore the graph to the state captured in the given snapshot.
+
+    Strategy:
+    1. Load the snapshot blob.
+    2. Delete all current Concept nodes (and their relations) for this graph_id.
+    3. Re-create every node and relation from the blob.
+
+    This intentionally leaves GraphSnapshot nodes untouched.
+    """
+    # 1. Fetch snapshot
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (s:GraphSnapshot {snap_id: $snap_id}) RETURN s.blob AS blob",
+            {"snap_id": snap_id}
+        )
+        record = result.single()
+    if not record:
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    blob_raw = record["blob"]
+    if isinstance(blob_raw, bytes):
+        blob_raw = zlib.decompress(blob_raw)
+
+    graph_data = _json_mod.loads(blob_raw)
+    nodes      = graph_data.get("nodes", [])
+    links      = graph_data.get("links", [])
+
+    with driver.session() as session:
+        # 2. Wipe current graph (Concept nodes only — leave snapshots alone)
+        session.run(
+            """
+            MATCH (n:Concept)
+            WHERE coalesce(n.graph_id, 'default') = $graph_id
+            DETACH DELETE n
+            """,
+            {"graph_id": graph_id}
+        )
+
+        # 3. Re-create nodes — batch with UNWIND (one round-trip)
+        node_rows = [
+            {
+                "content":           node.get("content") or node.get("name") or "",
+                "parent_type":       node.get("parent_type") or node.get("node_type") or "Concept",
+                "node_id":           node.get("node_id") or node.get("id") or str(_uuid.uuid4()),
+                "graph_id":          graph_id,
+                "valid_from":        node.get("valid_from"),
+                "valid_to":          node.get("valid_to"),
+                "x":                 node.get("x"),
+                "y":                 node.get("y"),
+                "z":                 node.get("z"),
+                "abstraction_level": node.get("abstraction_level"),
+                "confidence_tier":   node.get("confidence_tier"),
+                "embedding":         node.get("embedding") or [],
+            }
+            for node in nodes
+        ]
+        session.run(
+            """
+            UNWIND $rows AS row
+            CREATE (n:Concept)
+            SET n.content           = row.content,
+                n.parent_type       = row.parent_type,
+                n.node_type         = row.parent_type,
+                n.node_id           = row.node_id,
+                n.version_id        = row.node_id,
+                n.graph_id          = row.graph_id,
+                n.valid_from        = row.valid_from,
+                n.valid_to          = row.valid_to,
+                n.x                 = row.x,
+                n.y                 = row.y,
+                n.z                 = row.z,
+                n.abstraction_level = row.abstraction_level,
+                n.confidence_tier   = row.confidence_tier,
+                n.embedding         = row.embedding,
+                n.created_at        = datetime()
+            """,
+            {"rows": node_rows},
+        )
+
+        # 4. Re-create relations — 3d-json uses "source" and "target" as element IDs,
+        #    but after recreation those IDs change. We stored node_id on each node,
+        #    so we look up source/target by resolving them against the node list.
+        node_id_by_old_id = { n.get("id"): n.get("node_id") for n in nodes }
+
+        for link in links:
+            # 3d-json represents source/target as element IDs (strings or dicts)
+            raw_src = link.get("source") or link.get("source_node_id") or link.get("node_id_a")
+            raw_tgt = link.get("target") or link.get("target_node_id") or link.get("node_id_b")
+            # source/target may be dicts if the frontend serialised them that way
+            if isinstance(raw_src, dict): raw_src = raw_src.get("id") or raw_src.get("node_id")
+            if isinstance(raw_tgt, dict): raw_tgt = raw_tgt.get("id") or raw_tgt.get("node_id")
+
+            # Resolve to stable node_ids
+            src_nid = node_id_by_old_id.get(raw_src) or raw_src
+            tgt_nid = node_id_by_old_id.get(raw_tgt) or raw_tgt
+            if not src_nid or not tgt_nid:
+                continue
+            session.run(
+                """
+                MATCH (a:Concept {node_id: $src, graph_id: $graph_id})
+                MATCH (b:Concept {node_id: $tgt, graph_id: $graph_id})
+                MERGE (a)-[r:RELATION]->(b)
+                SET r.relation_type = $rel_type,
+                    r.weight        = $weight,
+                    r.confidence    = $confidence,
+                    r.justification = $justification,
+                    r.color         = $color,
+                    r.status        = $status,
+                    r.created_at    = datetime()
+                """,
+                {
+                    "src":          src_nid,
+                    "tgt":          tgt_nid,
+                    "graph_id":     graph_id,
+                    "rel_type":     link.get("rel_type") or link.get("relation_type") or "RELATES_TO",
+                    "weight":       link.get("weight") or 1.0,
+                    "confidence":   link.get("confidence") or 0.75,
+                    "justification": link.get("justification") or "",
+                    "color":        link.get("color") or "#00c8a0",
+                    "status":       link.get("status") or "CONFIRMED",
+                }
+            )
+
+    return {"status": "restored", "snap_id": snap_id, "nodes": len(nodes), "links": len(links)}

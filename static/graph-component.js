@@ -46,6 +46,34 @@ const DEFAULT_REL_COLORS = {
     SUSPENDS:          '#94a3b8',
 };
 
+// Node appearance configuration (no export needed)
+const NODE_STYLES = {
+    shapes: {
+        sphere: 'sphere',
+        cube: 'cube',
+        octahedron: 'octahedron',
+        tetrahedron: 'tetrahedron',
+        cone: 'cone'
+    },
+    materials: {
+        matte: 'matte',
+        standard: 'standard',
+        glossy: 'glossy',
+        wireframe: 'wireframe'
+    }
+};
+
+// Default node style per type
+const DEFAULT_NODE_STYLES = {
+    Concept: { shape: 'sphere', size: 5.6, material: 'matte' },
+    Observation: { shape: 'sphere', size: 5.0, material: 'matte' },
+    Method: { shape: 'cube', size: 5.2, material: 'standard' },
+    Reference: { shape: 'octahedron', size: 5.0, material: 'matte' },
+    DiscussionNode: { shape: 'octahedron', size: 5.95, material: 'glossy' },
+    Event: { shape: 'cone', size: 5.3, material: 'standard' },
+    DraftFragment: { shape: 'tetrahedron', size: 4.8, material: 'matte' }
+};
+
 function loadColors(key, defaults) {
     try {
         const s = localStorage.getItem(key);
@@ -86,9 +114,12 @@ const VERSION_Z_STEP     = 80;
 export function edgeDistance(link) {
     const type = (link.rel_type || link.relation_type || '').toUpperCase().trim();
     if (type === 'HAS_VERSION') return 0;
+    // CONTRADICTS pushes nodes apart — use a much longer spring distance
+    if (type === 'CONTRADICTS' || type === 'CONTRADICT') return MAX_EDGE_DISTANCE;
     const w = Math.max(0.05, Math.min(1.0, link.weight ?? 1.0));
     return Math.min(BASE_EDGE_DISTANCE / w, MAX_EDGE_DISTANCE);
 }
+
 
 export function assignVersionZ(nodes, links) {
     const nodeMap  = new Map(nodes.map(n => [n.id, n]));
@@ -259,19 +290,21 @@ function buildCurvePoints(srcNode, tgtNode, link) {
 function forceSimilarityCluster(strength = 0.04) {
     let nodes = [];
     function force(alpha) {
-        // Group by type
+        // Group by type — only include unpinned nodes in centroid calculation
+        // so manually-placed nodes don't drift toward the group average
         const groups = new Map();
         nodes.forEach(n => {
             const t = n.parent_type || n.node_type || 'unknown';
             if (!groups.has(t)) groups.set(t, []);
             groups.get(t).push(n);
         });
-        // For each group, nudge toward centroid
+        // For each group, nudge UNPINNED nodes toward the centroid of unpinned peers
         groups.forEach(group => {
-            if (group.length < 2) return;
-            const cx = group.reduce((s, n) => s + n.x, 0) / group.length;
-            const cy = group.reduce((s, n) => s + n.y, 0) / group.length;
-            group.forEach(n => {
+            const unpinned = group.filter(n => n.fx == null);
+            if (unpinned.length < 2) return;
+            const cx = unpinned.reduce((s, n) => s + n.x, 0) / unpinned.length;
+            const cy = unpinned.reduce((s, n) => s + n.y, 0) / unpinned.length;
+            unpinned.forEach(n => {
                 n.vx += (cx - n.x) * strength * alpha;
                 n.vy += (cy - n.y) * strength * alpha;
             });
@@ -279,6 +312,105 @@ function forceSimilarityCluster(strength = 0.04) {
     }
     force.initialize = ns => { nodes = ns; };
     return force;
+}
+
+// ADD THIS NEW FUNCTION RIGHT AFTER IT:
+function forceRelatedAttraction(strength = 0.06) {
+    let nodes = [];
+    let links = [];
+    
+    function force(alpha) {
+        // Build adjacency map for quick lookups
+        const adjacency = new Map();
+        links.forEach(link => {
+            const srcId = link.source?.id ?? link.source;
+            const tgtId = link.target?.id ?? link.target;
+            if (!adjacency.has(srcId)) adjacency.set(srcId, []);
+            if (!adjacency.has(tgtId)) adjacency.set(tgtId, []);
+            adjacency.get(srcId).push({ target: tgtId, weight: link.weight || 1.0 });
+            adjacency.get(tgtId).push({ target: srcId, weight: link.weight || 1.0 });
+        });
+        
+        // For each node, pull toward its connected nodes' positions
+        nodes.forEach(node => {
+            const neighbors = adjacency.get(node.id) || [];
+            if (neighbors.length === 0) return;
+            
+            let avgX = 0, avgY = 0, totalWeight = 0;
+            neighbors.forEach(neighbor => {
+                const targetNode = nodes.find(n => n.id === neighbor.target);
+                if (targetNode) {
+                    const w = neighbor.weight;
+                    avgX += targetNode.x * w;
+                    avgY += targetNode.y * w;
+                    totalWeight += w;
+                }
+            });
+            
+            if (totalWeight > 0) {
+                const targetX = avgX / totalWeight;
+                const targetY = avgY / totalWeight;
+                const factor = strength * alpha;
+                node.vx += (targetX - node.x) * factor;
+                node.vy += (targetY - node.y) * factor;
+            }
+        });
+    }
+    
+    force.initialize = ns => { nodes = ns; };
+    force.links = ls => { links = ls; };
+    return force;
+}
+
+export function reflowNeighbours(graphHandle, graphData, newNodeId) {
+    if (!graphData?.nodes?.length) return;
+
+    const neighbourIds = new Set([newNodeId]);
+    graphData.links.forEach(l => {
+        const s = l.source?.id ?? l.source;
+        const t = l.target?.id ?? l.target;
+        if (s === newNodeId) neighbourIds.add(t);
+        if (t === newNodeId) neighbourIds.add(s);
+    });
+
+    // Unpin neighbours
+    graphData.nodes.forEach(n => {
+        if (neighbourIds.has(n.id)) {
+            delete n.fx;
+            delete n.fy;
+        }
+    });
+
+    const sim = d3.forceSimulation(graphData.nodes)
+        .alphaMin(0.005)
+        .alphaDecay(0.035)
+        .velocityDecay(0.55)
+        .force('link', d3.forceLink(graphData.links)
+            .id(n => n.id)
+            .distance(l => edgeDistance(l))
+            .strength(l => {
+                const s = l.source?.id ?? l.source;
+                const t = l.target?.id ?? l.target;
+                if (!neighbourIds.has(s) && !neighbourIds.has(t)) return 0;
+                
+                const type = (l.rel_type || '').toUpperCase().trim();
+                if (type === 'HAS_VERSION') return 0.05;
+                
+                // Use confidence as strength for predicted relations
+                const confidence = l.confidence || l.weight || 1.0;
+                return 0.4 + confidence * 0.5;
+            })
+            .iterations(3)
+        )
+        .force('charge', d3.forceManyBody().strength(-60).distanceMax(200));
+
+    graphHandle._setSimulation(sim);
+
+    setTimeout(() => {
+        graphData.nodes.forEach(n => {
+            if (n.x != null) { n.fx = n.x; n.fy = n.y; }
+        });
+    }, 2500);
 }
 
 export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
@@ -294,6 +426,14 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
     container.appendChild(renderer.domElement);
 
     const scene  = new THREE.Scene();
+
+    const ambientLight = new THREE.AmbientLight(0x404060);
+scene.add(ambientLight);
+
+const mainLight = new THREE.DirectionalLight(0xffffff, 1);
+mainLight.position.set(10, 20, 5);
+scene.add(mainLight);
+
     const camera = new THREE.PerspectiveCamera(60, W / H, 0.1, 5000);
     camera.position.set(0, 0, 500);
 
@@ -483,55 +623,84 @@ export function createGraph(containerId, onNodeClick, onLinkClick, onNodeDrag) {
         if (e.ring) e.ring.position.set(node.x, node.y, node.z);
     }
 
-    function _addNode(node) {
-        const rawType      = node.parent_type || node.node_type || 'Concept';
-        const type         = rawType.charAt(0).toUpperCase() + rawType.slice(1);
-        const baseColor    = TYPE_COLORS[type] || '#445070';
-        const isDiscussion = type === 'DiscussionNode';
-
-        // Abstraction level → color tint (no longer Z, now encoded as color)
-        // L1=Observation: daha soluk, L5=Axiom: daha parlak
-        const absLevel = node.abstraction_level ?? 3;
-        const brightnessMult = 0.6 + (absLevel / 5) * 0.4; // range 0.68 – 1.0
-        const color = _tintColor(baseColor, brightnessMult);
-
-        // DiscussionNodes: larger octahedron so they read as meta-nodes at a glance.
-        // Everything else: standard sphere.
-        // In thick time mode _thickSize score enlarges node (1=5.6 → 7=9.0)
-        const thickBonus = node._thickSize ? (node._thickSize - 1) * 0.55 : 0;
-        const radius     = isDiscussion ? 5.95 : (5.6 + thickBonus);
-        const geometry = isDiscussion
-            ? new THREE.OctahedronGeometry(radius)
-            : new THREE.SphereGeometry(radius, 16, 12);
-
-        const group = new THREE.Group();
-        group.add(new THREE.Mesh(
-            geometry,
-            new THREE.MeshBasicMaterial({ color: hexToThreeColor(color) })
-        ));
-
-        // Wireframe overlay for discussion nodes — makes the diamond shape crisp
-        if (isDiscussion) {
-            group.add(new THREE.LineSegments(
-                new THREE.WireframeGeometry(geometry),
-                new THREE.LineBasicMaterial({
-                    color: hexToThreeColor('#e85090'),
-                    transparent: true,
-                    opacity: 0.45,
-                })
-            ));
-        }
-
-        group.position.set(node.x, node.y, node.z);
-        scene.add(group);
-        const ring = null;
-        const rawLabel = node.name || node.content || '...';
-        const label    = rawLabel.length > 19 ? rawLabel.slice(0, 19) + '…' : rawLabel;
-        const sprite   = makeLabelSprite(label, color);
-        sprite.position.set(node.x, node.y + radius + 8, node.z);
-        scene.add(sprite);
-        nodeMeshes.set(node.id, { group, labelSprite: sprite, ring, radius });
+function _addNode(node) {
+    const rawType = node.parent_type || node.node_type || 'Concept';
+    const type = rawType.charAt(0).toUpperCase() + rawType.slice(1);
+    const baseColor = TYPE_COLORS[type] || '#445070';
+    
+    // Get shape/material/size from node properties (with defaults)
+    const shape = node.shape || 'sphere';
+    const materialType = node.material || 'matte';
+    let size = node.size || 5.6;
+    
+    // Override with custom color if set
+    const customColor = node.node_color;
+    const color = customColor || _tintColor(baseColor, 0.6 + ((node.abstraction_level ?? 3) / 5) * 0.4);
+    
+    // Create geometry based on shape
+    let geometry;
+    switch(shape) {
+        case 'cube':
+            geometry = new THREE.BoxGeometry(size, size, size);
+            break;
+        case 'octahedron':
+            geometry = new THREE.OctahedronGeometry(size);
+            break;
+        case 'tetrahedron':
+            geometry = new THREE.TetrahedronGeometry(size);
+            break;
+        case 'cone':
+            geometry = new THREE.ConeGeometry(size * 0.8, size * 1.2, 16);
+            break;
+        default:
+            geometry = new THREE.SphereGeometry(size, 24, 18);
     }
+    
+    // Create material
+    let material;
+    switch(materialType) {
+        case 'standard':
+            material = new THREE.MeshStandardMaterial({
+                color: hexToThreeColor(color),
+                roughness: 0.5,
+                metalness: 0.3
+            });
+            break;
+        case 'glossy':
+            material = new THREE.MeshStandardMaterial({
+                color: hexToThreeColor(color),
+                roughness: 0.2,
+                metalness: 0.8
+            });
+            break;
+        case 'wireframe':
+            material = new THREE.MeshBasicMaterial({
+                color: hexToThreeColor(color),
+                wireframe: true
+            });
+            break;
+        default: // matte
+            material = new THREE.MeshStandardMaterial({
+                color: hexToThreeColor(color),
+                roughness: 0.8,
+                metalness: 0.05
+            });
+    }
+    
+    const group = new THREE.Group();
+    group.add(new THREE.Mesh(geometry, material));
+    group.position.set(node.x, node.y, node.z);
+    scene.add(group);
+    
+    // Label
+    const rawLabel = node.name || node.content || '...';
+    const label = rawLabel.length > 19 ? rawLabel.slice(0, 19) + '…' : rawLabel;
+    const sprite = makeLabelSprite(label, color);
+    sprite.position.set(node.x, node.y + size + 8, node.z);
+    scene.add(sprite);
+    
+    nodeMeshes.set(node.id, { group, labelSprite: sprite, ring: null, radius: size });
+}
 
     // ── Thick time — ontological weight of the relation ────────────────────────────
     // Reflected in bead size and particle density.
@@ -926,8 +1095,9 @@ export function reflowGraph(graphHandle, graphData) {
     // Charge: weak enough that link springs win, strong enough to prevent overlap
     const chargeStr = -Math.min(20 + nodeCount * 1.0, 120);
 
-    // Release all pins so the simulation can move everything
-    graphData.nodes.forEach(n => { delete n.fx; delete n.fy; });
+    // Release only XY pins so the simulation can reflow the 2D layout.
+    // Z is epoch/version controlled by the user — never touch it here.
+    graphData.nodes.forEach(n => { delete n.fx; delete n.fy; /* keep n.fz / n.z intact */ });
 
     const sim = d3.forceSimulation(graphData.nodes)
         // alphaMin kept above 0 so the simulation never fully stops —
@@ -949,7 +1119,14 @@ export function reflowGraph(graphHandle, graphData) {
         )
         .force('charge',    d3.forceManyBody().strength(chargeStr))
         .force('center',    d3.forceCenter(0, 0).strength(0.02))
-        .force('similarity', forceSimilarityCluster(0.04));
+        .force('similarity', forceSimilarityCluster(0.04))
+        .force('relatedAttraction', forceRelatedAttraction(0.06));  // ← ADD THIS LINE
+
+            const relatedForce = sim.force('relatedAttraction');
+    if (relatedForce && relatedForce.links) {
+        relatedForce.links(graphData.links);
+    }
+
 
     // Hand simulation to the render loop — don't call .stop()
     graphHandle._setSimulation(sim);
