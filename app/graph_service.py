@@ -92,6 +92,9 @@ class GraphService:
 
     @staticmethod
     def save_subnodes(node_id: str, subnodes: list):
+        subnodes = [s for s in subnodes if (s.get("title") or "").strip() or (s.get("description") or "").strip()]
+        if not subnodes:
+            return  # nothing to save
         """Replace all HAS_SUBNODE relationships for a node atomically."""
         with driver.session() as session:
             session.execute_write(GraphService._write_subnodes, node_id, subnodes)
@@ -210,6 +213,8 @@ class GraphService:
             WHERE coalesce(n.graph_id, 'default') = $graph_id
               AND NOT coalesce(n.is_subnode, false)
               AND NOT n:Subnode
+              AND NOT n:GraphSnapshot
+                              
             WITH n
             LIMIT $limit
             OPTIONAL MATCH (n)-[sr:HAS_SUBNODE]->(s)

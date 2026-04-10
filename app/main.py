@@ -473,6 +473,8 @@ _PREFIX_MAP = {
 
 @app.post("/api/nodes")
 def create_node(data: NodeCreate):
+    if not data.content or not data.content.strip():
+        raise HTTPException(status_code=422, detail="content is required and cannot be empty")
     import threading
 
     if data.subnodes:
@@ -481,6 +483,8 @@ def create_node(data: NodeCreate):
             s for s in data.subnodes
             if s and (s.get("title") or s.get("description") or s.get("content"))
         ]
+        if not data.subnodes:
+            data.subnodes = []
         if original_count != len(data.subnodes):
             print(f"Filtered out {original_count - len(data.subnodes)} empty subnodes")
 
@@ -491,7 +495,7 @@ def create_node(data: NodeCreate):
     def _create(tx):
         result = tx.run(
             """
-            OPTIONAL MATCH (existing)
+            OPTIONAL MATCH (existing:Concept)
             WHERE existing.node_id STARTS WITH $prefix
               AND coalesce(existing.graph_id, 'default') = $graph_id
             WITH coalesce(
@@ -802,10 +806,13 @@ def update_node(node_id: str, data: NodeUpdate):
         
         # Handle subnodes
     if data.subnodes is not None:
-        subnode_dicts = [{"title": s.title or "", "description": s.description or "", "strength": s.strength or 50} for s in data.subnodes]
-        GraphService.save_subnodes(node_id, subnode_dicts)
-    print("Subnodes received:", data.subnodes)
-    return {"status": "updated"}
+        subnode_dicts = [
+            {"title": s.title or "", "description": s.description or "", "strength": s.strength or 50}
+            for s in data.subnodes
+            if (s.title or "").strip() or (s.description or "").strip()
+        ]
+        if subnode_dicts:  # only call if there's actually something to save
+            GraphService.save_subnodes(node_id, subnode_dicts)
 
 @app.delete("/api/nodes/{node_id}")
 def delete_node(node_id: str):
@@ -944,6 +951,7 @@ def get_node_embeddings(graph_id: str = "default"):
                 MATCH (n:Concept)
                 WHERE coalesce(n.graph_id, 'default') = $graph_id
                   AND NOT n:Subnode
+                  AND NOT n:GraphSnapshot                                 
                   AND n.embedding IS NOT NULL
                   AND size(n.embedding) > 0
                 RETURN n.node_id AS node_id,
@@ -1054,7 +1062,7 @@ def _embedding_to_3d(embedding: list[float], radius: float = 180.0) -> dict:
     return {
         "x": round((x / norm) * radius, 2),
         "y": round((y / norm) * radius, 2),
-        "z": round((z / norm) * radius, 2),
+        "z": None,
     }
 
 

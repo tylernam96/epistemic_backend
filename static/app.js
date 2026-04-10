@@ -5,7 +5,7 @@ import * as THREE from 'https://unpkg.com/three@0.152.0/build/three.module.js';
 
 // ── epochToZ: converts epoch value to Z coordinate ──────────────────────────
 // Year format (>1900): (year - 2000) * 40  →  2000=0, 2010=400, 2020=800
-// Period format (small number): period * 80
+// Period format (small number ≤1900): period * 80  →  epoch=1 → z=80
 function epochToZ(node) {
     // Prefer explicit epoch (user-set year) over valid_from (unix timestamp)
     const raw = node.epoch ?? node.valid_from ?? null;
@@ -13,18 +13,25 @@ function epochToZ(node) {
     const e = Number(raw);
     if (isNaN(e)) return 0;
 
-    // If it looks like a year (1000–2200), treat it as a year directly
-    if (e >= 1000 && e <= 2200) {
-        return (e - 1900) * 200;
+    // Period format: small numbers (≤1900) are treated as period indices, not timestamps.
+    // This matches the refreshGraph formula: e > 1900 ? (e - 2000) * 40 : e * 80
+    // Must be checked BEFORE the unix-timestamp branch to avoid e.g. epoch=1 → year 1970 → z=14000.
+    if (e <= 1900) {
+        return e * 80;
     }
 
-    // It's a unix timestamp — convert to year first
+    // Year format (1901–2200): treat directly as a calendar year
+    if (e <= 2200) {
+        return (e - 2000) * 40;
+    }
+
+    // Looks like a unix timestamp — convert to year first
     const year = new Date(
         e > 1e10 ? e : e * 1000  // handle both ms and seconds
     ).getFullYear();
 
     if (year >= 1000 && year <= 2200) {
-        return (year - 1900) * 200;
+        return (year - 2000) * 40;
     }
 
     return 0;
@@ -621,42 +628,101 @@ async function refreshGraph() {
     // Assign Z for HAS_VERSION chains first
     assignVersionZ(data.nodes, data.links);
 
-    data.nodes.forEach(node => {
-        // Z rule: if the node has an epoch/valid_from set by the user, that ALWAYS
-        // determines Z — regardless of any stored z in the DB. The stored z may be
-        // stale (from before the epoch was set, or from a random scatter).
-        // Only fall back to stored node.z when there is genuinely no epoch.
-        const epochZ = epochToZ(node);   // returns 0 when no epoch exists
-        const hasEpoch = (node.epoch ?? node.valid_from) != null;
-
-        if (hasEpoch) {
-            node.z = epochZ;             // epoch always wins
-        } else if (node.version_z != null) {
-            node.z = node.version_z;     // HAS_VERSION chain depth
-        } else if (node.z != null) {
-            // keep stored z (user dragged it to a specific Z manually)
-        } else {
-            node.z = 0;
+   data.nodes.forEach(node => {
+    // Helper to check if a value is a valid number
+    const isValidNumber = (val) => typeof val === 'number' && !isNaN(val) && isFinite(val);
+    
+    // STEP 1: Calculate Z from epoch (THIS IS THE SOURCE OF TRUTH)
+    const epochValue = node.epoch ?? node.valid_from ?? null;
+    let computedZ = null;
+    let zSource = 'none';
+    
+    if (epochValue !== null) {
+        const e = Number(epochValue);
+        if (!isNaN(e)) {
+            // Epoch formula: year format (>1900) or period format (<=1900)
+            computedZ = e > 1900 ? (e - 2000) * 40 : e * 80;
+            zSource = `epoch=${epochValue}`;
         }
-
-        if (node.x != null && node.y != null) {
-            node.fx = node.x;
-            node.fy = node.y;
-            node.fz = node.z;  // Pin Z to prevent simulation drift
-            node.pinned = true;
-
+    }
+    
+    // STEP 2: Check for HAS_VERSION chain (secondary authority)
+    if (computedZ === null && node.version_z !== null && isValidNumber(node.version_z)) {
+        computedZ = node.version_z;
+        zSource = 'version_z';
+    }
+    
+    // STEP 3: Fall back to stored Z (user manually dragged)
+    if (computedZ === null && node.z !== null && isValidNumber(node.z)) {
+        computedZ = node.z;
+        zSource = 'stored_z';
+    }
+    
+    // STEP 4: Default to 0
+    if (computedZ === null) {
+        computedZ = 0;
+        zSource = 'default';
+    }
+    
+    // STEP 5: WARNING - Detect and fix crazy values
+    const isCrazyZ = Math.abs(computedZ) > 1000;
+    if (isCrazyZ) {
+        console.warn(`⚠️ CRAZY Z DETECTED for ${node.node_id || node.id}:`, {
+            old_z: computedZ,
+            epoch: node.epoch,
+            valid_from: node.valid_from,
+            version_z: node.version_z,
+            stored_z: node.z,
+            source: zSource
+        });
+        
+        // If epoch exists but gave crazy Z, recalculate properly
+        if (epochValue !== null) {
+            const e = Number(epochValue);
+            if (!isNaN(e) && e <= 1900) {
+                computedZ = e * 80;  // Force period calculation
+                console.log(`✅ Fixed Z for ${node.node_id}: ${computedZ} (epoch=${epochValue})`);
+            } else if (!isNaN(e) && e > 1900 && e < 2100) {
+                computedZ = (e - 2000) * 40;
+                console.log(`✅ Fixed Z for ${node.node_id}: ${computedZ} (year=${epochValue})`);
+            } else {
+                // Epoch is invalid or huge - treat as no epoch
+                computedZ = 0;
+                console.log(`❌ Invalid epoch ${epochValue}, setting Z=0`);
+            }
+            zSource = 'fixed_from_epoch';
         } else {
-            // New node without a saved XY — scatter it in the XY plane only.
-            // Z remains as computed above; do NOT randomise it.
-            const angle = Math.random() * 2 * Math.PI;
-            const r     = 80 + Math.random() * 120;
-            node.x  = r * Math.cos(angle);
-            node.y  = r * Math.sin(angle);
-            node.fx = node.x;
-            node.fy = node.y;
-            // Leave fz unset so the simulation doesn't fight the Z value
+            // No epoch, just clamp to reasonable range
+            computedZ = Math.min(Math.max(computedZ, -500), 500);
+            console.log(`🔧 Clamped crazy Z to ${computedZ} for ${node.node_id}`);
         }
-    });
+    }
+    
+    // STEP 6: Apply the Z value
+    node.z = computedZ;
+    
+    // STEP 7: Log every Z assignment (temporarily for debugging)
+    if (zSource !== 'stored_z' && node.z !== 0) {
+        console.log(`📍 ${node.node_id || node.id}: Z=${node.z} (${zSource})`);
+    }
+    
+    // STEP 8: Handle XY positioning (unchanged)
+    if (node.x != null && node.y != null && isValidNumber(node.x) && isValidNumber(node.y)) {
+        node.fx = node.x;
+        node.fy = node.y;
+        node.fz = node.z;
+        node.pinned = true;
+    } else {
+        // New node without saved XY — scatter in XY plane only
+        const angle = Math.random() * 2 * Math.PI;
+        const r = 80 + Math.random() * 120;
+        node.x = r * Math.cos(angle);
+        node.y = r * Math.sin(angle);
+        node.fx = node.x;
+        node.fy = node.y;
+        // fz intentionally left unset to allow epoch Z to work
+    }
+});
 
     state.graphData = data;
     state.dirtyNodes = {};
@@ -1002,7 +1068,6 @@ if (action === 'ADD_NODE') {
             if (suggestionData?.position) {
                 data.x = suggestionData.position.x;
                 data.y = suggestionData.position.y;
-                data.z = suggestionData.position.z || 0;
             } else if (!data.x && !data.y) {
                 // Simple scatter near centroid of existing nodes
                 const nodes = state.graphData?.nodes || [];
