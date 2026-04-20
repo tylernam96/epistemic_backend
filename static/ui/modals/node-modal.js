@@ -3,6 +3,29 @@ import { showFlash } from '../utils/flash.js';
 import { cosineSimilarity } from '../utils/colors.js';
 import { suggestPositionFromSimilarity, repelFromOverlap, placeOpposite } from '../utils/placement.js';
 
+// All 20 valid relation types
+const ALL_REL_TYPES = [
+    'SUPPORTS', 'CONTRADICTS', 'RELATES_TO', 'DEPENDS_ON', 'TRIGGERS',
+    'AMPLIFIES', 'REQUIRES', 'HAS_VERSION', 'DISCUSSES', 'FRICTION',
+    'DETERRITORIALIZES', 'RETERRITORIALIZES', 'OPENS_INTO', 'SEDIMENTS_INTO',
+    'HAUNTS', 'CONTAMINATES', 'SUPPLEMENTS', 'RESONATES_WITH', 'INTENSIFIES', 'SUSPENDS'
+];
+
+// Color per rel type for visual clarity
+const REL_TYPE_COLORS = {
+    SUPPORTS: '#00c8a0', CONTRADICTS: '#ff5a5a', RELATES_TO: '#8896b8',
+    DEPENDS_ON: '#6622aa', TRIGGERS: '#e85090', AMPLIFIES: '#ffa500',
+    REQUIRES: '#6622aa', HAS_VERSION: '#8896b8', DISCUSSES: '#b03070',
+    FRICTION: '#e85090', DETERRITORIALIZES: '#a78bfa', RETERRITORIALIZES: '#818cf8',
+    OPENS_INTO: '#c084fc', SEDIMENTS_INTO: '#60a5fa', HAUNTS: '#6366f1',
+    CONTAMINATES: '#f59e0b', SUPPLEMENTS: '#34d399', RESONATES_WITH: '#00c8a0',
+    INTENSIFIES: '#fbbf24', SUSPENDS: '#94a3b8',
+};
+
+function relColor(type) {
+    return REL_TYPE_COLORS[(type || '').toUpperCase()] || '#8896b8';
+}
+
 export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelations = []) {
     document.getElementById('add-node-modal')?.remove();
 
@@ -10,10 +33,9 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
     const modal = document.createElement('div');
     modal.id = 'add-node-modal';
     modal.className = 'creation-modal-overlay';
-    
-    // Store subnodes in modal state
+
     let subnodes = [];
-    
+
     modal.innerHTML = `
         <div class="creation-modal">
             <div class="modal-header">
@@ -25,37 +47,38 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                     <label>Title <span class="opt">(shows above node)</span></label>
                     <input type="text" id="an-title" placeholder="Node title..." style="margin-bottom:10px;">
                 </div>
-                
+
                 <div class="field-group">
                     <label>Description <span class="req">*</span></label>
                     <textarea id="an-content" rows="3" placeholder="Describe this concept, observation, or event..."></textarea>
 
-                    <div id="an-suggestion" class="position-suggestion" style="display:none; margin-top:10px; background:rgba(0,200,160,0.03); border:1px solid rgba(0,200,160,0.15); border-radius:8px; overflow:hidden; position:relative;">
-                        <div style="padding:12px 14px; background:rgba(0,200,160,0.02); border-bottom:1px solid rgba(0,200,160,0.1);">
-                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
-                                <span style="color:var(--concept); font-size:11px; font-weight:600; letter-spacing:0.05em;">✨ PLACEMENT REASONING</span>
-                                <span style="font-size:10px; color:#445070; font-family:'DM Mono',monospace;" id="an-confidence"></span>
+                    <!-- Placement reasoning box -->
+                    <div id="an-suggestion" style="display:none; margin-top:10px; background:rgba(0,200,160,0.03); border:1px solid rgba(0,200,160,0.15); border-radius:8px; overflow:hidden;">
+                        <div style="padding:10px 14px; background:rgba(0,200,160,0.02); border-bottom:1px solid rgba(0,200,160,0.08);">
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                                <span style="color:var(--concept); font-size:10px; font-weight:600; letter-spacing:0.05em;">✨ PLACEMENT REASONING</span>
+                                <span id="an-confidence" style="font-size:10px; color:#445070; font-family:'DM Mono',monospace;"></span>
                             </div>
-                            <div id="an-explanation" style="font-size:12px; color:#8e99b3; line-height:1.6; white-space:pre-wrap; font-family:'DM Mono',monospace; cursor:help;"></div>
+                            <!-- Explanation always visible, no hover needed -->
+                            <div id="an-explanation" style="font-size:11px; color:#8e99b3; line-height:1.6; font-family:'DM Mono',monospace; white-space:pre-wrap; max-height:80px; overflow-y:auto;"></div>
                         </div>
-                        <div style="padding:10px 14px; display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.2);">
-                            <div style="display:flex; gap:8px; align-items:center;">
-                                <span style="font-size:11px; color:#445070;">Suggested position:</span>
-                                <span id="an-coords" style="font-size:11px; color:var(--concept); font-family:'DM Mono',monospace;">x: — y: —</span>
-                            </div>
-                            <button id="an-use-suggestion" style="background:rgba(0,200,160,0.1); border:1px solid var(--concept); color:var(--concept); border-radius:4px; padding:6px 16px; font-size:11px; cursor:pointer; font-family:'DM Mono',monospace; font-weight:600;">Use This Position</button>
+                        <div style="padding:8px 14px; display:flex; align-items:center; justify-content:space-between; background:rgba(0,0,0,0.15);">
+                            <span id="an-coords" style="font-size:10px; color:#445070; font-family:'DM Mono',monospace;">x: — y: —</span>
+                            <button id="an-use-suggestion" style="background:rgba(0,200,160,0.1); border:1px solid rgba(0,200,160,0.4); color:var(--concept); border-radius:4px; padding:5px 14px; font-size:10px; cursor:pointer; font-family:'DM Mono',monospace; font-weight:600;">Use This Position</button>
                         </div>
                     </div>
 
-                    <div id="an-relations" style="display:none; margin-top:8px; border:1px solid rgba(0,200,160,0.12); border-radius:8px; overflow:hidden;">
-                        <div style="padding:7px 12px; background:rgba(0,200,160,0.03); border-bottom:1px solid rgba(0,200,160,0.1); display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:10px; color:#445070; letter-spacing:0.08em;">🔮 SUGGESTED RELATIONS</span>
-                            <span style="font-size:9px; color:#1e3040;">toggle to include on creation</span>
+                    <!-- Suggested relations -->
+                    <div id="an-relations" style="display:none; margin-top:8px; border:1px solid rgba(0,200,160,0.15); border-radius:8px; overflow:hidden;">
+                        <div style="padding:8px 12px; background:rgba(0,200,160,0.03); border-bottom:1px solid rgba(0,200,160,0.08); display:flex; align-items:center; justify-content:space-between;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:10px; color:#00c8a0; font-weight:600; letter-spacing:0.06em;">🔮 SUGGESTED RELATIONS</span>
+                                <span style="font-size:9px; color:#445070;">checked = will be created</span>
+                            </div>
+                            <span id="an-rel-status" style="font-size:9px; color:#445070; font-family:'DM Mono',monospace;"></span>
                         </div>
-                        <div id="an-relations-list" style="padding:8px; display:flex; flex-direction:column; gap:5px;"></div>
+                        <div id="an-relations-list" style="padding:8px; display:flex; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto;"></div>
                     </div>
-
-                    <div id="an-details-popup" style="display:none; position:fixed; background:#0c0e16; border:1px solid var(--concept); border-radius:8px; padding:14px; max-width:350px; z-index:10000; box-shadow:0 10px 40px rgba(0,0,0,0.8); backdrop-filter:blur(8px); pointer-events:none; white-space:pre-wrap; font-family:'DM Mono',monospace; font-size:11px; line-height:1.7; color:#8e99b3;"></div>
                 </div>
 
                 <div class="field-group">
@@ -100,14 +123,13 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
 
     document.body.appendChild(modal);
 
-    // Function to render subnodes list
+    // ── Subnodes ──────────────────────────────────────────────────────────────
     function renderSubnodes() {
         const container = document.getElementById('subnodes-container');
         if (!subnodes.length) {
             container.innerHTML = '<div style="color:#445070; font-size:11px; font-family:\'DM Mono\',monospace; padding:8px;">No subnodes yet — click "+ Add Subnode" to create one</div>';
             return;
         }
-        
         container.innerHTML = subnodes.map((subnode, idx) => `
             <div style="background:rgba(255,255,255,0.02); border:1px solid #1e2535; border-radius:6px; padding:10px;">
                 <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:8px;">
@@ -124,12 +146,10 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                 </div>
             </div>
         `).join('');
-        
-        // Add event listeners for subnode fields
+
         container.querySelectorAll('input[data-subnode-idx], textarea[data-subnode-idx]').forEach(el => {
-            const idx = parseInt(el.dataset.subnodeIdx);
+            const idx   = parseInt(el.dataset.subnodeIdx);
             const field = el.dataset.field;
-            
             if (field === 'strength') {
                 el.oninput = (e) => {
                     subnodes[idx].strength = parseInt(e.target.value);
@@ -137,45 +157,50 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                     if (display) display.textContent = e.target.value;
                 };
             } else {
-                el.oninput = (e) => {
-                    subnodes[idx][field] = e.target.value;
-                };
+                el.oninput = (e) => { subnodes[idx][field] = e.target.value; };
             }
         });
-        
-        // Add remove button listeners
+
         container.querySelectorAll('[data-remove-subnode]').forEach(btn => {
             btn.onclick = () => {
-                const idx = parseInt(btn.dataset.removeSubnode);
-                subnodes.splice(idx, 1);
+                subnodes.splice(parseInt(btn.dataset.removeSubnode), 1);
                 renderSubnodes();
             };
         });
     }
-    
-    // Add subnode button
+
     document.getElementById('add-subnode-btn').onclick = () => {
-        subnodes.push({
-            title: '',
-            description: '',
-            strength: 50
-        });
+        subnodes.push({ title: '', description: '', strength: 50 });
         renderSubnodes();
     };
-    
     renderSubnodes();
 
-    const contentInput   = document.getElementById('an-content');
-    const suggestionDiv  = document.getElementById('an-suggestion');
-    const explanationEl  = document.getElementById('an-explanation');
-    const confidenceEl   = document.getElementById('an-confidence');
-    const coordsEl       = document.getElementById('an-coords');
+    // ── Suggestion + Relation prediction ─────────────────────────────────────
+    const contentInput     = document.getElementById('an-content');
+    const suggestionDiv    = document.getElementById('an-suggestion');
+    const explanationEl    = document.getElementById('an-explanation');
+    const confidenceEl     = document.getElementById('an-confidence');
+    const coordsEl         = document.getElementById('an-coords');
     const useSuggestionBtn = document.getElementById('an-use-suggestion');
-    const xInput         = document.getElementById('an-x');
-    const yInput         = document.getElementById('an-y');
-    const zInput         = document.getElementById('an-z');
-    const popupEl        = document.getElementById('an-details-popup');
+    const xInput           = document.getElementById('an-x');
+    const yInput           = document.getElementById('an-y');
+    const submitBtn        = document.getElementById('add-node-submit');
     let suggestionTimeout, currentSuggestion = null;
+    let _predictionPending = false;
+
+    function _setSubmitReady() {
+        submitBtn.disabled     = false;
+        submitBtn.textContent  = 'Create Node →';
+        submitBtn.style.opacity = '1';
+        _predictionPending = false;
+    }
+
+    function _setSubmitWaiting() {
+        submitBtn.disabled     = true;
+        submitBtn.textContent  = '⟳ Predicting relations…';
+        submitBtn.style.opacity = '0.6';
+        _predictionPending = true;
+    }
 
     contentInput.addEventListener('input', () => {
         clearTimeout(suggestionTimeout);
@@ -184,94 +209,145 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             const content = contentInput.value.trim();
             if (content.length < 15) { suggestionDiv.style.display = 'none'; return; }
 
-            explanationEl.textContent = '🔍 Analyzing semantic relationships...';
-            confidenceEl.textContent = '';
-            coordsEl.textContent = 'x: — y: —';
-            useSuggestionBtn.style.opacity = '1';
-            useSuggestionBtn.style.pointerEvents = 'auto';
+            // Show placement loading
+            explanationEl.textContent = '🔍 Analyzing semantic relationships…';
+            confidenceEl.textContent  = '';
+            coordsEl.textContent      = 'x: — y: —';
             suggestionDiv.style.display = 'block';
 
+            // Show relation loading + disable submit
+            const relDiv    = document.getElementById('an-relations');
+            const relList   = document.getElementById('an-relations-list');
+            const relStatus = document.getElementById('an-rel-status');
+            relDiv.style.display = 'block';
+            relList.innerHTML    = '<div style="padding:6px 2px; font-size:10px; color:#445070; font-family:\'DM Mono\',monospace;">⟳ Predicting relations…</div>';
+            _setSubmitWaiting();
+
             const parentType = document.getElementById('an-type').value;
-            const suggestion = await suggestPositionFromSimilarity(content, existingNodes);
-            currentSuggestion = suggestion;
 
-            // Relation loading state
-            const relDiv  = document.getElementById('an-relations');
-            const relList = document.getElementById('an-relations-list');
-            if (relDiv && relList) {
-                relDiv.style.display = 'block';
-                relList.innerHTML = '<div style="padding:4px 2px;font-size:10px;color:#445070;">🔮 Predicting relations...</div>';
-            }
+            // Run placement + prediction in parallel
+            const [suggestion] = await Promise.all([
+                suggestPositionFromSimilarity(content, existingNodes),
+                // Relation prediction runs inside its own try/catch below
+                (async () => {
+                    try {
+                        const resp = await fetch('/api/relations/predict', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                content,
+                                parent_type: parentType,
+                                existing_nodes: existingNodes.map(n => ({
+                                    id: n.id,
+                                    node_id: n.node_id,
+                                    content: n.content || n.name || '',
+                                    parent_type: n.parent_type || n.node_type || 'Concept',
+                                    embedding: n.embedding,
+                                })),
+                            }),
+                        });
 
-            // Background: Gemini relation prediction
-            (async () => {
-                try {
-                    const resp = await fetch('/api/relations/predict', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            content, parent_type: parentType,
-                            existing_nodes: existingNodes.map(n => ({
-                                id: n.id, node_id: n.node_id,
-                                content: n.content || n.name || '',
-                                parent_type: n.parent_type || n.node_type || 'Concept',
-                                embedding: n.embedding,
-                            })),
-                        }),
-                    });
-                    if (!resp.ok) throw new Error('Prediction failed');
-                    const predictionData = await resp.json();
-                    const rels = predictionData.relations || [];
+                        if (!resp.ok) throw new Error('Prediction failed');
+                        const predictionData = await resp.json();
+                        const rels = predictionData.relations || [];
 
-                    currentSuggestion._pendingRels = rels;
-                    currentSuggestion._relAccepted = new Set(rels.map((_, i) => i));
+                        if (!currentSuggestion) currentSuggestion = {};
+                        currentSuggestion._pendingRels  = rels;
+                        currentSuggestion._relAccepted  = new Set(rels.map((_, i) => i));
 
-                    if (!rels.length) {
-                        relDiv.style.display = 'none';
-                        return;
-                    }
+                        if (!rels.length) {
+                            relDiv.style.display = 'none';
+                            _setSubmitReady();
+                            return;
+                        }
 
-                    relList.innerHTML = rels.map((rel, i) => {
-                        const targetNode = existingNodes.find(n => n.node_id === rel.target_node_id);
-                        const targetName = targetNode
-                            ? (targetNode.content || targetNode.name || '').slice(0, 40)
-                            : rel.target_node_id;
-                        return `
-                            <div data-rel-idx="${i}" style="display:flex; align-items:flex-start; gap:8px; padding:6px; background:rgba(0,200,160,0.02); border:1px solid rgba(0,200,160,0.15); border-radius:5px; cursor:pointer; transition:all 0.15s;">
-                                <input type="checkbox" data-rel-check="${i}" checked style="margin-top:2px; cursor:pointer;">
-                                <div style="flex:1; min-width:0;">
-                                    <div style="font-size:10px; font-weight:600; color:var(--concept); letter-spacing:0.05em; margin-bottom:2px;">${rel.rel_type}</div>
-                                    <div style="font-size:11px; color:#c8d0e0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${targetName}</div>
-                                    <div style="font-size:10px; color:#445070; margin-top:2px; line-height:1.4;">${rel.justification}</div>
+                        // Render relation cards
+                        relList.innerHTML = rels.map((rel, i) => {
+                            const targetNode = existingNodes.find(n => n.node_id === rel.target_node_id);
+                            const targetName = targetNode
+                                ? (targetNode.title || targetNode.content || targetNode.name || '').slice(0, 50)
+                                : rel.target_node_id;
+                            const color    = relColor(rel.rel_type);
+                            const confPct  = Math.round((rel.confidence ?? 0.7) * 100);
+
+                            return `
+                            <div data-rel-idx="${i}" style="
+                                background: rgba(255,255,255,0.02);
+                                border: 1px solid rgba(255,255,255,0.06);
+                                border-left: 3px solid ${color};
+                                border-radius: 6px;
+                                padding: 8px 10px;
+                                transition: background 0.15s;
+                            ">
+                                <!-- Header row: rel type + confidence + checkbox -->
+                                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:5px;">
+                                    <div style="display:flex; align-items:center; gap:6px;">
+                                        <span style="font-size:10px; font-weight:700; color:${color}; letter-spacing:0.06em;">${rel.rel_type}</span>
+                                        <span style="font-size:9px; color:#445070; font-family:'DM Mono',monospace;">${confPct}% confidence</span>
+                                    </div>
+                                    <label style="display:flex; align-items:center; gap:5px; cursor:pointer; flex-shrink:0;">
+                                        <input type="checkbox" data-rel-check="${i}" checked
+                                            style="width:14px; height:14px; cursor:pointer; accent-color:${color};">
+                                        <span style="font-size:9px; color:#445070;">include</span>
+                                    </label>
+                                </div>
+
+                                <!-- Target node name -->
+                                <div style="font-size:11px; color:#c8d0e0; margin-bottom:4px; font-family:'DM Mono',monospace;">
+                                    → <span style="color:#e0e8ff;">${targetName}</span>
+                                </div>
+
+                                <!-- AI justification — always visible -->
+                                <div style="font-size:10px; color:#6a7a9a; line-height:1.5; font-family:'DM Mono',monospace; border-top:1px solid rgba(255,255,255,0.04); padding-top:5px; margin-top:2px;">
+                                    ${rel.justification || ''}
                                 </div>
                             </div>`;
-                    }).join('');
+                        }).join('');
 
-                    relList.querySelectorAll('[data-rel-check]').forEach(cb => {
-                        const i = parseInt(cb.dataset.relCheck);
-                        cb.onchange = () => {
-                            if (cb.checked) currentSuggestion._relAccepted.add(i);
-                            else currentSuggestion._relAccepted.delete(i);
-                        };
-                    });
+                        if (relStatus) relStatus.textContent = `${rels.length} suggested`;
 
-                } catch (err) {
-                    console.warn('Relation prediction failed:', err);
-                    relDiv.style.display = 'none';
-                }
-            })();
+                        // Checkbox toggle listeners
+                        relList.querySelectorAll('[data-rel-check]').forEach(cb => {
+                            const i = parseInt(cb.dataset.relCheck);
+                            cb.onchange = () => {
+                                if (cb.checked) currentSuggestion._relAccepted.add(i);
+                                else currentSuggestion._relAccepted.delete(i);
+                            };
+                            // Clicking the whole card toggles the checkbox too
+                            cb.closest('[data-rel-idx]').onclick = (e) => {
+                                if (e.target === cb) return; // avoid double-toggle
+                                cb.checked = !cb.checked;
+                                cb.onchange();
+                            };
+                        });
 
+                        _setSubmitReady();
+
+                    } catch (err) {
+                        console.warn('Relation prediction failed:', err);
+                        relDiv.style.display = 'none';
+                        _setSubmitReady();
+                    }
+                })(),
+            ]);
+
+            // Store suggestion for position use
+            currentSuggestion = { ...(currentSuggestion || {}), ...suggestion };
+
+            // Update placement UI
             if (!suggestion.x) {
                 explanationEl.textContent = suggestion.explanation || 'Could not generate suggestion.';
-                coordsEl.textContent = 'x: — y: —';
-                useSuggestionBtn.style.opacity = '0.4';
+                coordsEl.textContent      = 'x: — y: —';
+                useSuggestionBtn.style.opacity      = '0.4';
                 useSuggestionBtn.style.pointerEvents = 'none';
-                return;
+            } else {
+                explanationEl.textContent = suggestion.explanation || 'Position calculated from semantic similarity.';
+                confidenceEl.textContent  = suggestion.label || '';
+                coordsEl.textContent      = `x: ${suggestion.x.toFixed(1)}  y: ${suggestion.y.toFixed(1)}`;
+                useSuggestionBtn.style.opacity      = '1';
+                useSuggestionBtn.style.pointerEvents = 'auto';
             }
 
-            explanationEl.textContent = suggestion.explanation || 'Position calculated from semantic similarity.';
-            confidenceEl.textContent = suggestion.label || '';
-            coordsEl.textContent = `x: ${suggestion.x.toFixed(1)} y: ${suggestion.y.toFixed(1)}`;
         }, 800);
     });
 
@@ -281,65 +357,59 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
         yInput.value = currentSuggestion.y.toFixed(2);
     };
 
-    explanationEl.addEventListener('mouseenter', e => {
-        if (!currentSuggestion?.explanation) return;
-        popupEl.textContent = currentSuggestion.explanation;
-        popupEl.style.display = 'block';
-        const rect = explanationEl.getBoundingClientRect();
-        if (rect) {
-            popupEl.style.left = (rect.right + 20) + 'px';
-            popupEl.style.top  = (rect.top  - 20) + 'px';
-        }
-    });
-    explanationEl.addEventListener('mousemove', e => {
-        if (popupEl.style.display === 'block') {
-            popupEl.style.left = (e.pageX + 20) + 'px';
-            popupEl.style.top  = (e.pageY - 100) + 'px';
-        }
-    });
-    explanationEl.addEventListener('mouseleave', () => { popupEl.style.display = 'none'; });
-
+    // ── Close ─────────────────────────────────────────────────────────────────
     const close = () => { window.clearSuggestedPosition?.(); modal.remove(); };
     document.getElementById('add-node-close').onclick  = close;
     document.getElementById('add-node-cancel').onclick = close;
     modal.addEventListener('click', e => { if (e.target === modal) close(); });
 
-    document.getElementById('add-node-submit').onclick = async () => {
-        const content = document.getElementById('an-content').value.trim();
+    // ── Submit ────────────────────────────────────────────────────────────────
+    submitBtn.onclick = async () => {
+        const content = contentInput.value.trim();
         if (!content) {
             const err = document.getElementById('an-error');
-            err.textContent = 'Description is required.';
+            err.textContent  = 'Description is required.';
             err.style.display = 'block';
             return;
         }
-        const btn = document.getElementById('add-node-submit');
-        btn.textContent = 'Creating...'; btn.disabled = true;
+
+        submitBtn.textContent = 'Creating…';
+        submitBtn.disabled    = true;
 
         const title = document.getElementById('an-title').value.trim();
-        const xv = document.getElementById('an-x').value;
-        const yv = document.getElementById('an-y').value;
-        const zv = document.getElementById('an-z').value;
-        const vf = document.getElementById('an-valid-from').value;
-        const vt = document.getElementById('an-valid-to').value;
+        const xv    = document.getElementById('an-x').value;
+        const yv    = document.getElementById('an-y').value;
+        const zv    = document.getElementById('an-z').value;
+        const vf    = document.getElementById('an-valid-from').value;
+        const vt    = document.getElementById('an-valid-to').value;
 
         const acceptedRelations = (currentSuggestion?._pendingRels || [])
             .filter((_, i) => currentSuggestion?._relAccepted?.has(i));
 
-        const result = await onSubmit({
-            title,
-            content,
-            parent_type:        document.getElementById('an-type').value,
-            valid_from:         vf ? parseInt(vf) : null,
-            valid_to:           vt ? parseInt(vt) : null,
-            x:                  xv !== '' ? parseFloat(xv) : (currentSuggestion?.x ?? null),
-            y:                  yv !== '' ? parseFloat(yv) : (currentSuggestion?.y ?? null),
-            z:                  zv !== '' ? parseFloat(zv) : null,
-            subnodes:           subnodes.filter(s => s.title.trim() || s.description.trim()), // Only include non-empty subnodes
-        }, { ...(currentSuggestion || {}), acceptedRelations });
+        try {
+            const result = await onSubmit({
+                title,
+                content,
+                parent_type: document.getElementById('an-type').value,
+                valid_from:  vf ? parseInt(vf) : null,
+                valid_to:    vt ? parseInt(vt) : null,
+                x:           xv !== '' ? parseFloat(xv) : (currentSuggestion?.x ?? null),
+                y:           yv !== '' ? parseFloat(yv) : (currentSuggestion?.y ?? null),
+                z:           zv !== '' ? parseFloat(zv) : null,
+                subnodes:    subnodes.filter(s => s.title.trim() || s.description.trim()),
+            }, { ...(currentSuggestion || {}), acceptedRelations });
 
-        window.clearSuggestedPosition?.();
-        modal.remove();
-        showFlash(`Node ${result.node_id} created`);
+            window.clearSuggestedPosition?.();
+            modal.remove();
+            showFlash(`Node ${result.node_id} created`);
+        } catch (err) {
+            console.error('Node creation error:', err);
+            submitBtn.textContent = 'Create Node →';
+            submitBtn.disabled    = false;
+            const errEl = document.getElementById('an-error');
+            errEl.textContent  = err.message || 'Failed to create node.';
+            errEl.style.display = 'block';
+        }
     };
 }
 
@@ -348,27 +418,15 @@ export function renderEditNodeModal(node, onSubmit) {
 
     const NODE_TYPES  = Object.keys(TYPE_COLORS);
     const currentType = node.parent_type || node.node_type || 'Concept';
-    
-    console.log('=== EDIT NODE MODAL ===');
-    console.log('Node ID:', node.id);
-    console.log('Node subnodes:', node.subnodes);
-    console.log('Full node object:', node);
-    
-
-    // Initialize subnodes from existing node data
-    //let subnodes = node.subnodes || [];
 
     let subnodes = [];
     if (node.subnodes && Array.isArray(node.subnodes)) {
         subnodes = node.subnodes.map(s => ({
-            id: s.id || null,
-            title: s.title || s.name || '',
+            id:          s.id || null,
+            title:       s.title || s.name || '',
             description: s.description || s.content || '',
-            strength: s.strength || 50
+            strength:    s.strength || 50,
         }));
-        console.log('Initialized subnodes:', subnodes);
-    } else {
-        console.log('No subnodes found on node object');
     }
 
     const modal = document.createElement('div');
@@ -386,12 +444,12 @@ export function renderEditNodeModal(node, onSubmit) {
                     <label>Title <span class="opt">(shows above node)</span></label>
                     <input type="text" id="en-title" value="${node.title || ''}" style="margin-bottom:10px;">
                 </div>
-                
+
                 <div class="field-group">
                     <label>Description <span class="req">*</span></label>
                     <textarea id="en-content" rows="4">${node.content || node.name || ''}</textarea>
                 </div>
-                
+
                 <div class="field-group">
                     <label style="display:flex; align-items:center; justify-content:space-between;">
                         <span>Subnodes <span class="opt">(hidden until node is clicked)</span></span>
@@ -399,7 +457,7 @@ export function renderEditNodeModal(node, onSubmit) {
                     </label>
                     <div id="edit-subnodes-container" style="margin-top:8px; display:flex; flex-direction:column; gap:8px;"></div>
                 </div>
-                
+
                 <div class="field-row">
                     <div class="field-group">
                         <label>Type</label>
@@ -425,15 +483,14 @@ export function renderEditNodeModal(node, onSubmit) {
         </div>`;
 
     document.body.appendChild(modal);
-    
-    // Function to render subnodes list for edit modal
+
+    // ── Edit subnodes ─────────────────────────────────────────────────────────
     function renderEditSubnodes() {
         const container = document.getElementById('edit-subnodes-container');
         if (!subnodes.length) {
             container.innerHTML = '<div style="color:#445070; font-size:11px; font-family:\'DM Mono\',monospace; padding:8px;">No subnodes — click "+ Add Subnode" to create one</div>';
             return;
         }
-        
         container.innerHTML = subnodes.map((subnode, idx) => `
             <div style="background:rgba(255,255,255,0.02); border:1px solid #1e2535; border-radius:6px; padding:10px;">
                 <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:8px;">
@@ -450,49 +507,35 @@ export function renderEditNodeModal(node, onSubmit) {
                 </div>
             </div>
         `).join('');
-        
-        // Add event listeners for subnode fields
+
         container.querySelectorAll('input[data-edit-subnode-idx], textarea[data-edit-subnode-idx]').forEach(el => {
-            const idx = parseInt(el.dataset.editSubnodeIdx);
+            const idx   = parseInt(el.dataset.editSubnodeIdx);
             const field = el.dataset.field;
-            
             if (field === 'strength') {
                 el.oninput = (e) => {
-                        console.log('input changed:', idx, field, e.target.value);
-
                     subnodes[idx].strength = parseInt(e.target.value);
                     const display = container.querySelector(`[data-edit-strength-display="${idx}"]`);
                     if (display) display.textContent = e.target.value;
                 };
             } else {
-                el.oninput = (e) => {
-                    subnodes[idx][field] = e.target.value;
-                };
+                el.oninput = (e) => { subnodes[idx][field] = e.target.value; };
             }
         });
-        
-        // Add remove button listeners
+
         container.querySelectorAll('[data-edit-remove-subnode]').forEach(btn => {
             btn.onclick = () => {
-                const idx = parseInt(btn.dataset.editRemoveSubnode);
-                subnodes.splice(idx, 1);
+                subnodes.splice(parseInt(btn.dataset.editRemoveSubnode), 1);
                 renderEditSubnodes();
             };
         });
     }
-    
-    // Add subnode button
+
     document.getElementById('edit-add-subnode-btn').onclick = () => {
-        subnodes.push({
-            title: '',
-            description: '',
-            strength: 50
-        });
+        subnodes.push({ title: '', description: '', strength: 50 });
         renderEditSubnodes();
     };
-    
     renderEditSubnodes();
-    
+
     setTimeout(() => document.getElementById('en-content')?.focus(), 50);
 
     document.getElementById('edit-node-close').onclick  = () => modal.remove();
@@ -500,18 +543,16 @@ export function renderEditNodeModal(node, onSubmit) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 
     document.getElementById('edit-node-submit').onclick = async () => {
-        console.log('Submit clicked, subnodes:', subnodes); // ← add this
-
         const content = document.getElementById('en-content').value.trim();
         if (!content) {
             const err = document.getElementById('en-error');
             err.textContent = 'Description is required.'; err.style.display = 'block'; return;
         }
         const btn = document.getElementById('edit-node-submit');
-        btn.textContent = 'Saving...'; btn.disabled = true;
+        btn.textContent = 'Saving…'; btn.disabled = true;
         const title = document.getElementById('en-title').value.trim();
-        const vf = document.getElementById('en-valid-from').value;
-        const vt = document.getElementById('en-valid-to').value;
+        const vf    = document.getElementById('en-valid-from').value;
+        const vt    = document.getElementById('en-valid-to').value;
         try {
             await onSubmit({
                 title,
@@ -521,15 +562,13 @@ export function renderEditNodeModal(node, onSubmit) {
                 valid_to:    vt ? parseInt(vt) : null,
                 subnodes:    subnodes.filter(s => s.title.trim() || s.description.trim()),
             });
-
-
             modal.remove();
             showFlash('Node updated');
-} catch(err) {
-    console.error('Submit error:', err); // ← add this
-    btn.textContent = 'Save Changes →'; btn.disabled = false;
-    const errEl = document.getElementById('en-error');
-    errEl.textContent = 'Save failed — check console.'; errEl.style.display = 'block';
-}
+        } catch (err) {
+            console.error('Edit node error:', err);
+            btn.textContent = 'Save Changes →'; btn.disabled = false;
+            const errEl = document.getElementById('en-error');
+            errEl.textContent = 'Save failed — check console.'; errEl.style.display = 'block';
+        }
     };
 }

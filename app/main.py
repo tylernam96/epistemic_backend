@@ -647,6 +647,70 @@ def normalize_embedding(embedding):
         return []
     return [float(v) for v in embedding]
  
+@app.post("/api/relations/predict")
+def predict_relations(data: dict):
+    """Predict relations between a new node and existing nodes."""
+    try:
+        content = data.get("content", "")
+        parent_type = data.get("parent_type", "Concept")
+        existing_nodes = data.get("existing_nodes", [])
+        
+        if not content or not existing_nodes:
+            return {"relations": []}
+        
+        # Build a summary of existing nodes (limit to 15 for API limits)
+        nodes_summary = []
+        for n in existing_nodes[:15]:
+            node_content = n.get('content', '')[:100]
+            if node_content:
+                nodes_summary.append(f"- ID: {n.get('node_id')} | Type: {n.get('parent_type', 'Concept')} | Content: {node_content}")
+        
+        nodes_text = "\n".join(nodes_summary)
+        
+        prompt = f"""You are analyzing a new concept to be added to a knowledge graph.
+
+NEW CONCEPT: "{content}"
+TYPE: {parent_type}
+
+EXISTING NODES:
+{nodes_text}
+
+Suggest up to 3 relationships between the new concept and the most relevant existing nodes.
+Consider: SUPPORTS, CONTRADICTS, REQUIRES, TRIGGERS, AMPLIFIES, DEPENDS_ON, RELATES_TO
+
+Return ONLY valid JSON in this exact format (no other text, no markdown):
+{{
+  "relations": [
+    {{
+      "target_node_id": "the node_id from above",
+      "rel_type": "SUPPORTS",
+      "justification": "Brief explanation why"
+    }}
+  ]
+}}
+
+If no meaningful relations exist, return {{"relations": []}}"""
+
+        response = _chat_model.generate_content(prompt, generation_config={"temperature": 0.3})
+        text = response.text.strip()
+        # Clean up markdown if present
+        text = text.replace("```json", "").replace("```", "").strip()
+        
+        result = json.loads(text)
+        
+        # Validate the response structure
+        if "relations" not in result:
+            result = {"relations": []}
+        
+        print(f"🔮 Predicted {len(result['relations'])} relations for '{content[:50]}'")
+        return result
+        
+    except Exception as e:
+        print(f"❌ Relation prediction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"relations": []}
+
 # ── Discussion Node creation ──────────────────────────────────────────────
 @app.post("/api/discussion-nodes")
 def create_discussion_node(data: DiscussionNodeCreate):

@@ -1,4 +1,4 @@
-import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors } from './graph-component.js';
+import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors, nudgeNodesFromRelations } from './graph-component.js';
 import { UI } from './ui.js';
 import { openDriftCapture, openDriftArchive, linkCrystalToNode, openTimeLayerPanel } from './ui/hud/drift-log.js';
 import * as THREE from 'https://unpkg.com/three@0.152.0/build/three.module.js';
@@ -1063,8 +1063,7 @@ window.dispatch = async (action, payload) => {
 if (action === 'ADD_NODE') {
     UI.renderAddNodeModal(async (data, suggestionData) => {
         try {
-            // Use pre-computed suggestion position if already provided by the modal,
-            // otherwise scatter near existing nodes — skip the slow AI placement call here.
+            // Use pre-computed suggestion position if already provided
             if (suggestionData?.position) {
                 data.x = suggestionData.position.x;
                 data.y = suggestionData.position.y;
@@ -1092,26 +1091,62 @@ if (action === 'ADD_NODE') {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const result = await res.json();
 
-            // Single refresh — no double-call, no position-save timeout
+            // First refresh - get the new node in graphData
             await refreshGraph();
 
-            // Fly to the new node
+            const acceptedRelations = suggestionData?.acceptedRelations || [];
             const newNode = state.graphData?.nodes.find(n => n.node_id === result.node_id);
-            if (newNode) flyToNode(newNode, 1500);
+            
+            if (newNode) {
+                flyToNode(newNode, 1500);
+            }
+
+            // Create accepted relations in the graph
+            if (acceptedRelations.length > 0 && newNode) {
+                const nodeMap = new Map((state.graphData?.nodes || []).map(n => [n.node_id, n]));
+                
+                await Promise.all(acceptedRelations.map(async (rel) => {
+                    const targetNode = nodeMap.get(rel.target_node_id);
+                    if (!targetNode) {
+                        console.warn(`Target node not found: ${rel.target_node_id}`);
+                        return;
+                    }
+                    
+                    return fetch('/api/links', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            node_a: newNode.id,
+                            node_b: targetNode.id,
+                            rel_type: rel.rel_type,
+                            justification: rel.justification,
+                            weight: rel.confidence ?? 0.75,
+                            confidence: rel.confidence ?? 0.75,
+                            status: 'PROVISIONAL',
+                        }),
+                    });
+                }));
+                
+                // Second refresh - show the new links
+                await refreshGraph();
+                
+                // Nudge nodes based on relations (after second refresh)
+                nudgeNodesFromRelations(Graph, state.graphData, newNode, acceptedRelations);
+            }
 
             // Fire-and-forget snapshot
-// Fire-and-forget snapshot
-fetch('/api/snapshots', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-        label: `Node added: ${result.node_id}`,
-        graph_id: getGraphId()
-    })
-}).then(async (r) => {
-    console.log('Snapshot status:', r.status, await r.json()); // ← check this
-    _cache.snapshots = null;
-}).catch(err => console.warn('Snapshot failed:', err));
+            fetch('/api/snapshots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    label: `Node added: ${result.node_id}`,
+                    graph_id: getGraphId()
+                })
+            }).then(async (r) => {
+                console.log('Snapshot status:', r.status);
+                _cache.snapshots = null;
+            }).catch(err => console.warn('Snapshot failed:', err));
+            
             return result;
 
         } catch (err) {
@@ -1121,6 +1156,8 @@ fetch('/api/snapshots', {
         }
     }, state.graphData?.nodes || [], state.graphData?.links || []);
 }
+
+
 if (action === 'EDIT_NODE') {
     const node = (state.graphData?.nodes || []).find(n => n.id === payload);
     if (!node) return;

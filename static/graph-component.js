@@ -982,6 +982,10 @@ function _addNode(node) {
             _simulation = sim;
         },
 
+        getSimulation() { return _simulation; },   // add this line alongside _setSimulation
+    _getMesh(nodeId) { return nodeMeshes.get(nodeId); },
+
+
         // Pin a specific node at its current XY (called from app.js save flow)
         pinNode(nodeId) {
             const node = _graphData.nodes.find(n => n.id === nodeId);
@@ -1165,6 +1169,68 @@ export function drawSuggestionVectors(scene, fromNode, toNodes) {
             _suggestionLines.push(sprite);
         }
     });
+}
+
+export function nudgeNodesFromRelations(graphHandle, graphData, newNode, relations) {
+    if (!relations?.length || !graphData?.nodes?.length) return;
+
+    const nodeMap = new Map(graphData.nodes.map(n => [n.node_id, n]));
+    const NUDGE_BASE = 35; // max pixels to move a node
+
+    relations.forEach(rel => {
+        const target = nodeMap.get(rel.target_node_id);
+        if (!target || target.x == null || target.y == null) return;
+
+        const dx   = newNode.x - target.x;
+        const dy   = newNode.y - target.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const mag  = (rel.confidence ?? 0.5) * NUDGE_BASE;
+
+        delete target.fx;
+        delete target.fy;
+
+        if ((rel.rel_type || '').toUpperCase() === 'CONTRADICTS') {
+            // Push away from new node
+            target.fx = target.x - (dx / dist) * mag;
+            target.fy = target.y - (dy / dist) * mag;
+        } else {
+            // Pull toward new node, scaled by confidence
+            target.fx = target.x + (dx / dist) * mag;
+            target.fy = target.y + (dy / dist) * mag;
+        }
+        target.x = target.fx;
+        target.y = target.fy;
+    
+                if ((rel.rel_type || '').toUpperCase() === 'CONTRADICTS') {
+            target.x -= (dx / dist) * mag;
+            target.y -= (dy / dist) * mag;
+        } else {
+            target.x += (dx / dist) * mag;
+            target.y += (dy / dist) * mag;
+        }
+
+        // Sync the mesh position immediately
+        const entry = graphHandle._getMesh?.(target.id);
+        if (entry) {
+            entry.group.position.set(target.x, target.y, target.z);
+            entry.labelSprite.position.set(target.x, target.y + entry.radius + 8, target.z);
+        }
+    
+    });
+
+    // Bump simulation so nudged nodes settle naturally
+const sim = graphHandle.getSimulation?.();
+if (sim) {
+    sim.alpha(0.25).restart();
+}
+
+    // Re-pin nudged nodes after settling
+    setTimeout(() => {
+        relations.forEach(rel => {
+            const target = nodeMap.get(rel.target_node_id);
+            if (target) { target.fx = target.x; target.fy = target.y; }
+        });
+    }, 2500);
 }
 
 export function clearSuggestionVectors(scene) {
