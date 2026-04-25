@@ -251,6 +251,10 @@ export async function suggestPositionFromSimilarity(content, existingNodes) {
         if (!embedRes.ok) return { explanation: 'Could not generate embedding.', label: '⚠️ Embedding failed' };
 
         const { embedding } = await embedRes.json();
+        
+        console.log('Query embedding sample (first 10 values):', embedding.slice(0, 10));
+console.log('Query embedding norm:', Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0)));
+        
         const nodesWithEmb = existingNodes.filter(n => n.embedding?.length > 0);
 
         if (!nodesWithEmb.length) {

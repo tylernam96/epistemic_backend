@@ -226,8 +226,26 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
             const parentType = document.getElementById('an-type').value;
 
             // Run placement + prediction in parallel
-            const [suggestion] = await Promise.all([
-                suggestPositionFromSimilarity(content, existingNodes),
+let enrichedNodes = existingNodes;
+try {
+    const embRes = await fetch('/api/nodes/embeddings');
+    const { nodes: embNodes } = await embRes.json();
+    const embMap = {};
+    for (const n of embNodes) {
+        if (n.node_id) embMap[n.node_id] = n.embedding;
+        if (n.id)      embMap[n.id]      = n.embedding;
+    }
+    enrichedNodes = existingNodes.map(n => ({
+        ...n,
+        embedding: embMap[n.node_id] || embMap[n.id] || n.embedding || [],
+    }));
+    console.log('Enriched:', enrichedNodes.filter(n => n.embedding?.length > 0).length, 'of', enrichedNodes.length);
+} catch (e) {
+    console.warn('Could not enrich embeddings for placement:', e);
+}
+
+const [suggestion] = await Promise.all([
+    suggestPositionFromSimilarity(content, enrichedNodes),
                 // Relation prediction runs inside its own try/catch below
                 (async () => {
                     try {
@@ -268,7 +286,7 @@ export function renderAddNodeModal(onSubmit, existingNodes = [], existingRelatio
                                 ? (targetNode.title || targetNode.content || targetNode.name || '').slice(0, 50)
                                 : rel.target_node_id;
                             const color    = relColor(rel.rel_type);
-                            const confPct  = Math.round((rel.confidence ?? 0.7) * 100);
+                            const confPct  = Math.round((rel.confidence || 0.7) * 100);
 
                             return `
                             <div data-rel-idx="${i}" style="

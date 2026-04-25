@@ -172,8 +172,11 @@ Be thorough in your analysis. Look for subtle connections. If the new concept re
 
         import json
         
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt, generation_config={"temperature": 0.3})
+        response = _client.models.generate_content(
+            model=_CHAT_MODEL,
+            contents=prompt,
+            config={"temperature": 0.3},
+        )
         
         text = response.text.strip()
         text = text.replace("```json", "").replace("```", "").strip()
@@ -257,9 +260,10 @@ Respond ONLY with a JSON array of strings, one per node, in the same order:
 
         reasons = []
         try:
-            explain_resp = _chat_model.generate_content(
-                explain_prompt,
-                generation_config={"temperature": 0.3},
+            explain_resp = _client.models.generate_content(
+                model=_CHAT_MODEL,
+                contents=explain_prompt,
+                config={"temperature": 0.3},
             )
             raw = explain_resp.text.strip().replace("```json", "").replace("```", "").strip()
             reasons = _json_mod.loads(raw)
@@ -684,20 +688,33 @@ Return ONLY valid JSON in this exact format (no other text, no markdown):
     {{
       "target_node_id": "the node_id from above",
       "rel_type": "SUPPORTS",
+      "confidence": 0.85,
       "justification": "Brief explanation why"
     }}
   ]
 }}
 
+
 If no meaningful relations exist, return {{"relations": []}}"""
 
-        response = _chat_model.generate_content(prompt, generation_config={"temperature": 0.3})
+        response = _client.models.generate_content(
+            model=_CHAT_MODEL,
+            contents=prompt,
+            config={"temperature": 0.3},
+        )
         text = response.text.strip()
         # Clean up markdown if present
         text = text.replace("```json", "").replace("```", "").strip()
         
         result = json.loads(text)
         
+        for rel in result.get("relations", []):
+            if not isinstance(rel.get("confidence"), (int, float)):
+                rel["confidence"] = 0.7  # explicit fallback only when truly missing
+
+            if "relations" not in result:
+                result = {"relations": []}
+
         # Validate the response structure
         if "relations" not in result:
             result = {"relations": []}
@@ -1072,9 +1089,10 @@ Concept: "{data.content}"
 Node type: {data.parent_type or 'Concept'}"""
 
     try:
-        resp = _chat_model.generate_content(
-            prompt,
-            generation_config={"temperature": 0.3},
+        resp = _client.models.generate_content(
+            model=_CHAT_MODEL,
+            contents=prompt,
+            config={"temperature": 0.3},
         )
         if not resp.candidates or resp.candidates[0].finish_reason.name != "STOP":
             raise HTTPException(status_code=500, detail="Gemini blocked or failed to respond")
@@ -1087,14 +1105,22 @@ Node type: {data.parent_type or 'Concept'}"""
 
 # --- AI ANALYZE: Map Extractor + Embedding Placement ---
 
-import google.generativeai as _genai
 import json as _json
 import math as _math
 import os as _os
+from google import genai
 
-_genai.configure(api_key=_os.environ["GEMINI_API_KEY"])
-_chat_model  = _genai.GenerativeModel("gemini-2.5-flash")
-_embed_model = "models/gemini-embedding-2-preview"
+_GCP_PROJECT  = _os.environ.get("GCP_PROJECT_ID", "your-gcp-project-id")
+_GCP_LOCATION = _os.environ.get("GCP_LOCATION", "us-central1")
+
+_client = genai.Client(
+    vertexai=True,
+    project=_GCP_PROJECT,
+    location=_GCP_LOCATION,
+)
+
+_CHAT_MODEL  = "gemini-2.5-flash"
+_EMBED_MODEL = "publishers/google/models/text-embedding-004"
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two equal-length vectors."""
@@ -1107,11 +1133,11 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
 
 def _embed_text(text: str) -> list[float]:
-    result = _genai.embed_content(
-        model="models/gemini-embedding-2-preview",
-        content=text[:800],
+    result = _client.models.embed_content(
+        model=_EMBED_MODEL,
+        contents=text[:800],
     )
-    vec = result["embedding"]  # 768-dimensional, no prompt tricks needed
+    vec = result.embeddings[0].values
     norm = _math.sqrt(sum(v * v for v in vec)) or 1.0
     return [v / norm for v in vec]
 
@@ -1216,10 +1242,11 @@ def ai_analyze(data: AIAnalyzeRequest):
     Text to analyze:
     \"\"\"{text}\"\"\""""
 
-    resp = _chat_model.generate_content(
-    extraction_prompt,
-    generation_config={"temperature": 0.2},
-)
+    resp = _client.models.generate_content(
+        model=_CHAT_MODEL,
+        contents=extraction_prompt,
+        config={"temperature": 0.2},
+    )
 
     if not resp.candidates or resp.candidates[0].finish_reason.name != "STOP":
         raise HTTPException(status_code=500, detail="Gemini blocked or failed to respond")
