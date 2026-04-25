@@ -342,6 +342,7 @@ class NodeCreate(BaseModel):
     material: Optional[str] = "matte"    # matte, standard, glossy, wireframe
     size: Optional[float] = 5.6          # 3.0 to 12.0
     node_color: Optional[str] = None     # hex color like "#ff6600"
+    title: Optional[str] = None
 
 class SubnodeUpdate(BaseModel):
     id: Optional[str] = None
@@ -525,7 +526,8 @@ def create_node(data: NodeCreate):
                 n.shape             = $shape,
                 n.material          = $material,
                 n.size              = $size,
-                n.node_color        = $node_color
+                n.node_color        = $node_color,
+                n.title  = $title
             RETURN elementId(n) AS id, n.node_id AS node_id
             """,
             {
@@ -545,6 +547,7 @@ def create_node(data: NodeCreate):
                 "material":          data.material or "matte",
                 "size":              data.size or 5.6,
                 "node_color":        data.node_color,
+                "title":             data.title or "",
             },
         )
         return result.single()
@@ -569,6 +572,7 @@ def create_node(data: NodeCreate):
         "material":          data.material or "matte",
         "size":              data.size or 5.6,
         "node_color":        data.node_color,
+        "title":             data.title or "",
     }
 
     def _create_with_uuid(tx):
@@ -594,7 +598,8 @@ def create_node(data: NodeCreate):
                 n.shape             = $shape,
                 n.material          = $material,
                 n.size              = $size,
-                n.node_color        = $node_color
+                n.node_color        = $node_color,
+                n.title = $title
             RETURN elementId(n) AS id, n.node_id AS node_id
             """,
             {**_base_params, "node_id": f"{prefix}{_uuid_mod.uuid4().hex[:8]}"},
