@@ -1,5 +1,6 @@
 import { TYPE_COLORS } from '../../graph-component.js';
 import { showFlash } from '../utils/flash.js';
+
 import { cosineSimilarity } from '../utils/colors.js';
 import { suggestPositionFromSimilarity, repelFromOverlap, placeOpposite } from '../utils/placement.js';
 
@@ -454,7 +455,7 @@ export function renderEditNodeModal(node, onSubmit) {
         <div class="creation-modal">
             <div class="modal-header">
                 <span class="modal-tag">EDIT NODE</span>
-                <span style="font-size:10px;color:#445070;font-family:'DM Mono',monospace;">${node.node_id || ''}</span>
+                <span style="font-size:10px;color:#445070;font-family:'DM Mono',monospace;">${node.title || node.node_id || ''}</span>
                 <button class="modal-close" id="edit-node-close">&#x2715;</button>
             </div>
             <div class="modal-body">

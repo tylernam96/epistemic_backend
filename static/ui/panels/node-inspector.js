@@ -8,7 +8,10 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
     el.innerHTML = `
         <div class="insp-header">
             <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
-                <h2 style="color:white;margin:0;flex:1;font-size:15px;line-height:1.4;">${node.content || node.name}</h2>
+                <div style="flex:1;">
+                    ${node.title ? `<h2 style="color:white;margin:0 0 6px;font-size:15px;line-height:1.4;">${node.title}</h2>` : ''}
+                    <p style="color:#8e99b3;margin:0;font-size:11px;line-height:1.6;font-family:'DM Mono',monospace;">${((node.content || node.name) || '').substring(0, 120)}${((node.content || node.name) || '').length > 120 ? '…' : ''}</p>
+                </div>
                 <div style="display:flex;gap:6px;flex-shrink:0;">
                     <button onclick="window.__editNode()" style="background:rgba(0,200,160,0.08);border:1px solid rgba(0,200,160,0.3);color:var(--concept);border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap;font-family:'DM Mono',monospace;">Edit &#x270E;</button>
                     <button onclick="document.getElementById('node-inspector').style.display='none'" style="background:none;border:none;color:#445070;font-size:14px;cursor:pointer;padding:2px 6px;border-radius:4px;">&#x2715;</button>
@@ -68,9 +71,10 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
                             <div onclick="window.__viewRelation(${i})" style="color:${resolveRelColor(nb.rel_type)};font-size:10px;font-weight:600;letter-spacing:0.05em;cursor:pointer;padding:2px 4px 2px 0;">
                                 ${nb.rel_type || '—'} <span style="opacity:0.4;font-size:9px;">&#x25B6;</span>
                             </div>
-                            ${nb.rel_id ? `<button onclick="window.__deleteRelation('${nb.rel_id}', '${(nb.name || '').replace(/'/g, "\\&#39;")}')" style="background:none;border:1px solid rgba(255,90,90,0.25);color:rgba(255,90,90,0.5);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;">&#x2715;</button>` : ''}
+                            ${nb.rel_id ? `<button onclick="window.__deleteRelation('${nb.rel_id}', '${((nb.title || nb.name) || '').replace(/'/g, "\\&#39;")}')" style="background:none;border:1px solid rgba(255,90,90,0.25);color:rgba(255,90,90,0.5);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;">&#x2715;</button>` : ''}
                         </div>
-                        <div onclick="window.__inspectNode('${nb.code}')" style="cursor:pointer;font-weight:bold;color:#c8d0e0;">${nb.name}</div>
+                        <div onclick="window.__inspectNode('${nb.code}')" style="cursor:pointer;font-weight:bold;color:#c8d0e0;">${nb.title || nb.name}</div>
+                        ${!nb.title ? '' : `<div style="font-size:10px;color:#445070;margin-top:2px;font-family:'DM Mono',monospace;">${(nb.name || '').substring(0, 80)}${(nb.name || '').length > 80 ? '…' : ''}</div>`}
                         ${nb.justification ? `<div style="font-size:11px;margin-top:4px;color:#8e99b3;">${nb.justification}</div>` : ''}
                     </div>`).join('')}
         </div>

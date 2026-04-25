@@ -1,5 +1,6 @@
 import { createGraph, reflowGraph, assignVersionZ, randomOnSphere, zFromAbstractionLevel, drawSuggestionVectors, clearSuggestionVectors, nudgeNodesFromRelations } from './graph-component.js';
 import { UI } from './ui.js';
+import { renderBatchImportModal } from './ui/modals/batch-import-modal.js';
 import { openDriftCapture, openDriftArchive, linkCrystalToNode, openTimeLayerPanel } from './ui/hud/drift-log.js';
 import * as THREE from 'https://unpkg.com/three@0.152.0/build/three.module.js';
 
@@ -700,6 +701,9 @@ async function refreshGraph() {
     
     // STEP 6: Apply the Z value
     node.z = computedZ;
+
+    // STEP 6b: Set display name to title only (shown as label above node)
+    node.name = node.title || '';
     
     // STEP 7: Log every Z assignment (temporarily for debugging)
     if (zSource !== 'stored_z' && node.z !== 0) {
@@ -1157,6 +1161,14 @@ if (action === 'ADD_NODE') {
     }, state.graphData?.nodes || [], state.graphData?.links || []);
 }
 
+if (action === 'BATCH_IMPORT') {
+    const nodes = state.graphData?.nodes || [];
+    const links = state.graphData?.links || [];  // ← add this
+    renderBatchImportModal(nodes, links, async (createdNodes, confirmedRels) => {
+        await refreshGraph();
+        showFlash(`✨ Imported ${createdNodes.length} nodes · ${confirmedRels.length} relations`);
+    });
+}
 
 if (action === 'EDIT_NODE') {
     const node = (state.graphData?.nodes || []).find(n => n.id === payload);
@@ -1885,6 +1897,27 @@ function injectDiscussionBtn() {
     anchor.parentElement.insertBefore(btn, anchor.nextSibling);
 }
 
+// ========== ADD THIS FUNCTION HERE ==========
+function injectBatchImportBtn() {
+    // Prevent duplicate buttons
+    if (document.getElementById('btn-batch-import')) return;
+    
+    // Find an existing button to anchor next to
+    const saveBtn = document.getElementById('btn-save-positions');
+    if (!saveBtn) return;
+    
+    const btn = document.createElement('button');
+    btn.id = 'btn-batch-import';
+    btn.textContent = '📋 Batch Import';
+    btn.title = 'Import multiple thesis sections at once';
+    btn.className = saveBtn.className; // Inherit styling from existing buttons
+    btn.onclick = () => window.dispatch('BATCH_IMPORT');
+    
+    // Insert after the save button or discussion mode button
+    const anchor = document.getElementById('btn-discussion-mode') || saveBtn;
+    anchor.parentElement.insertBefore(btn, anchor.nextSibling);
+}
+
 function addShapeControlsToInspector(node) {
     // Wait for inspector to exist
     const inspector = document.getElementById('node-inspector');
@@ -2018,6 +2051,7 @@ window.quickShape = async (nodeId, shape) => {
 function _initUI() {
     injectLabelToggleBtn();
     injectDiscussionBtn();
+    injectBatchImportBtn();
     injectTimelineBtn();
     initWorkspaceSwitcher();
 }
