@@ -1118,12 +1118,34 @@ from google import genai
 import time
 import random
 import tempfile
+from google.oauth2 import service_account
+from google.cloud import aiplatform
 
 creds_json = _os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+
 if creds_json:
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        f.write(creds_json)
-        _os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+    # Parse the JSON
+    creds_info = json.loads(creds_json)
+    
+    # Create credentials object directly
+    credentials = service_account.Credentials.from_service_account_info(
+        creds_info,
+        scopes=['https://www.googleapis.com/auth/cloud-platform']
+    )
+    
+    # Get project ID from the credentials
+    project_id = creds_info.get('project_id')
+else:
+    # Fallback to default credentials location
+    credentials = None
+    project_id = _os.environ.get("GOOGLE_CLOUD_PROJECT")
+
+# 2. Now initialize AI Platform with explicit credentials
+aiplatform.init(
+    project=project_id,
+    location='us-central1',  # or your preferred region
+    credentials=credentials
+)
 
 REQUESTS_PER_MINUTE = 45  # adjust to your quota limit
 _DELAY = 60 / REQUESTS_PER_MINUTE
