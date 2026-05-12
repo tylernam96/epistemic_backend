@@ -270,7 +270,30 @@ async function handleNodeClick(node) {
 
     const fetchId = fullNode.id || fullNode.node_id || fullNode.code;
     const response = await fetch(`/graph/node/${fetchId}/neighbors`);
-    const neighbors = await response.json();
+    const neighborsRaw = await response.json();
+    const neighbors = Array.isArray(neighborsRaw)
+        ? neighborsRaw
+        : (neighborsRaw.neighbors || neighborsRaw.nodes || neighborsRaw.data || []);
+
+    // Enrich neighbors with title from graphData.nodes (API does not return title)
+    const allNodes = state.graphData?.nodes || [];
+    // Build a quick id→title map for justification replacement
+    const nodeIdToTitle = {};
+    allNodes.forEach(n => { if (n.node_id && n.title) nodeIdToTitle[n.node_id] = n.title; });
+
+    neighbors.forEach(nb => {
+        const match = allNodes.find(n =>
+            n.id === nb.neighbor_id || n.node_id === nb.code
+        );
+        if (match?.title) nb.title = match.title;
+
+        // Replace any node IDs embedded in justification text with their titles
+        if (nb.justification) {
+            nb.justification = nb.justification.replace(/\b(D[a-f0-9]{7,})\b/g, (id) => {
+                return nodeIdToTitle[id] ? `"${nodeIdToTitle[id]}"` : id;
+            });
+        }
+    });
 
     UI.renderNodeInspector(fullNode, neighbors, (neighborStub) => {
         setTimeout(() => addShapeControlsToInspector(fullNode), 100);
@@ -727,6 +750,11 @@ async function refreshGraph() {
         // fz intentionally left unset to allow epoch Z to work
     }
 });
+
+    // Normalise link field names — API may use 'type' or 'relation_type' instead of 'rel_type'
+    data.links.forEach(l => {
+        if (!l.rel_type) l.rel_type = l.type || l.relation_type || l.rel || '';
+    });
 
     state.graphData = data;
     state.dirtyNodes = {};
@@ -1511,8 +1539,9 @@ if (action === 'TIMELINE') {
         const fresh = state.graphData?.nodes.find(n => n.id === newNode.id);
         if (fresh) {
             flyToNode(fresh, 1200);
-            const neighbors = await fetch(`/graph/node/${fresh.id}/neighbors`).then(r => r.json());
-            UI.renderNodeInspector(fresh, neighbors, (nb) => {
+            const neighborsRaw2 = await fetch(`/graph/node/${fresh.id}/neighbors`).then(r => r.json());
+            const neighbors2 = Array.isArray(neighborsRaw2) ? neighborsRaw2 : (neighborsRaw2.neighbors || neighborsRaw2.nodes || neighborsRaw2.data || []);
+            UI.renderNodeInspector(fresh, neighbors2, (nb) => {
                 const full = (state.graphData?.nodes || []).find(n => n.node_id === nb.code) || nb;
                 handleNodeClick(full);
             });

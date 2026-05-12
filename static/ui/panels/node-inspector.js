@@ -2,7 +2,10 @@ import { resolveRelColor } from '../utils/colors.js';
 import { getTimeLayersForNode, openTimeLayerPanel } from '../hud/drift-log.js';
 import { showFlash } from '../utils/flash.js';
 
-export function renderNodeInspector(node, neighbors, onNodeClick) {
+export function renderNodeInspector(node, neighborsRaw, onNodeClick) {
+    const neighbors = Array.isArray(neighborsRaw)
+        ? neighborsRaw
+        : (neighborsRaw?.neighbors || neighborsRaw?.nodes || neighborsRaw?.data || []);
     const el = document.getElementById('node-inspector');
 
     el.innerHTML = `
@@ -73,9 +76,9 @@ export function renderNodeInspector(node, neighbors, onNodeClick) {
                             </div>
                             ${nb.rel_id ? `<button onclick="window.__deleteRelation('${nb.rel_id}', '${((nb.title || nb.name) || '').replace(/'/g, "\\&#39;")}')" style="background:none;border:1px solid rgba(255,90,90,0.25);color:rgba(255,90,90,0.5);border-radius:4px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'DM Mono',monospace;">&#x2715;</button>` : ''}
                         </div>
-                        <div onclick="window.__inspectNode('${nb.code}')" style="cursor:pointer;font-weight:bold;color:#c8d0e0;">${nb.title || nb.name}</div>
-                        ${!nb.title ? '' : `<div style="font-size:10px;color:#445070;margin-top:2px;font-family:'DM Mono',monospace;">${(nb.name || '').substring(0, 80)}${(nb.name || '').length > 80 ? '…' : ''}</div>`}
-                        ${nb.justification ? `<div style="font-size:11px;margin-top:4px;color:#8e99b3;">${nb.justification}</div>` : ''}
+                        <div onclick="window.__inspectNode('${nb.code}')" style="cursor:pointer;font-weight:600;font-size:12px;color:#c8d0e0;line-height:1.4;">${nb.title ? nb.title : ((nb.name || '').substring(0, 60) + ((nb.name || '').length > 60 ? '…' : ''))}</div>
+                        ${nb.title && nb.name ? `<div style="font-size:10px;color:#445070;margin-top:3px;line-height:1.5;">${(nb.name || '').substring(0, 80)}${(nb.name || '').length > 80 ? '…' : ''}</div>` : ''}
+                        ${nb.justification ? `<div style="font-size:10px;margin-top:4px;color:#5a6680;line-height:1.5;">${(nb.justification || '').substring(0, 100)}${(nb.justification || '').length > 100 ? '…' : ''}</div>` : ''}
                     </div>`).join('')}
         </div>
 

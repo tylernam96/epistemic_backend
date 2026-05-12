@@ -753,7 +753,7 @@ function _addNode(node) {
         if (!src || !tgt) return;
 
         const relType = (link.rel_type || link.relation_type || '').toUpperCase().trim();
-        const baseHex = link.color || REL_COLORS[relType] || '#445070';
+        const baseHex = REL_COLORS[relType] || link.color || '#445070';
         const conf    = link.confidence ?? 0.75;
         const w       = link.weight ?? 1.0;
 
@@ -951,6 +951,8 @@ function _addNode(node) {
             data.links.forEach(l => {
                 if (typeof l.source === 'object' && l.source !== null) l.source = l.source.id;
                 if (typeof l.target === 'object' && l.target !== null) l.target = l.target.id;
+                // Normalise rel_type — API may use 'type' or 'relation_type'
+                if (!l.rel_type) l.rel_type = l.type || l.relation_type || l.rel || '';
             });
             data.nodes.forEach(n => _addNode(n));
             data.links.forEach(l => _addLink(l));

@@ -353,8 +353,9 @@ class SubnodeUpdate(BaseModel):
 
 class NodeUpdate(BaseModel):
     content: Optional[str] = None
-    title: Optional[str] = None  # ← add this
+    title: Optional[str] = None 
     node_id: Optional[str] = None
+    parent_type: Optional[str] = None 
     x: Optional[float] = None
     y: Optional[float] = None
     z: Optional[float] = None
@@ -1114,6 +1115,18 @@ import json as _json
 import math as _math
 import os as _os
 from google import genai
+import time
+import random
+import tempfile
+
+creds_json = _os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+if creds_json:
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        f.write(creds_json)
+        _os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = f.name
+
+REQUESTS_PER_MINUTE = 45  # adjust to your quota limit
+_DELAY = 60 / REQUESTS_PER_MINUTE
 
 _GCP_PROJECT  = _os.environ.get("GCP_PROJECT_ID", "your-gcp-project-id")
 _GCP_LOCATION = _os.environ.get("GCP_LOCATION", "us-central1")
@@ -1138,10 +1151,22 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
 
 
 def _embed_text(text: str) -> list[float]:
-    result = _client.models.embed_content(
-        model=_EMBED_MODEL,
-        contents=text[:800],
-    )
+    max_retries = 8
+    for attempt in range(max_retries):
+        try:
+            result = _client.models.embed_content(
+                model=_EMBED_MODEL,
+                contents=text[:800],
+            )
+            time.sleep(_DELAY)  # ← rate limiting: pause after every successful call
+            break
+        except Exception as e:
+            if "429" not in str(e) or attempt == max_retries - 1:
+                raise
+            wait = (2 ** attempt) + random.uniform(0, 1)
+            print(f"Rate limited. Retrying in {wait:.1f}s...")
+            time.sleep(wait)
+
     vec = result.embeddings[0].values
     norm = _math.sqrt(sum(v * v for v in vec)) or 1.0
     return [v / norm for v in vec]
