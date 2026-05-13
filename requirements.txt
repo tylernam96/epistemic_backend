@@ -5,3 +5,7 @@ pydantic
 python-dotenv
 networkx
 google-genai
+google-cloud-aiplatform
+google-generativeai
+google-auth
+google-auth-httplib2
