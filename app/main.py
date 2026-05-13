@@ -1195,47 +1195,21 @@ def _embedding_to_3d(embedding: list[float], radius: float = 180.0) -> dict:
         "z": None,
     }
 
-
-
-class AIAnalyzeRequest(BaseModel):
-    text: str
-    existing_node_ids: Optional[List[str]] = None  # limit comparison set
-
 @app.get("/debug/auth")
 async def debug_auth():
-    import os
     results = {}
     
-    # Check env vars exist
-    results["has_credentials_json"] = bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
-    results["has_project_id"] = bool(os.environ.get("GCP_PROJECT_ID"))
-    results["has_location"] = bool(os.environ.get("GCP_LOCATION"))
-    results["credentials_file"] = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "not set")
+    results["gcp_project"] = _GCP_PROJECT
+    results["gcp_location"] = _GCP_LOCATION
+    results["credentials_passed"] = credentials is not None
+    results["has_credentials_json"] = bool(_os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
     
-    # Try to actually authenticate
-    try:
-        from google.oauth2 import service_account
-        import json
-        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        if creds_json:
-            info = json.loads(creds_json)
-            results["service_account_email"] = info.get("client_email", "missing")
-            results["project_in_json"] = info.get("project_id", "missing")
-            creds = service_account.Credentials.from_service_account_info(
-                info,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"]
-            )
-            results["credentials_created"] = True
-            results["credentials_valid"] = not creds.expired
-    except Exception as e:
-        results["credentials_error"] = str(e)
+    if credentials:
+        results["service_account_email"] = getattr(credentials, "service_account_email", "unknown")
     
-    # Try a real embedding call
     try:
-        from google import genai
-        client = genai.Client()
-        result = client.models.embed_content(
-            model="text-embedding-004",
+        result = _client.models.embed_content(
+            model=_EMBED_MODEL,
             contents="test"
         )
         results["embedding_works"] = True
@@ -1243,6 +1217,10 @@ async def debug_auth():
         results["embedding_error"] = str(e)
     
     return results
+
+class AIAnalyzeRequest(BaseModel):
+    text: str
+    existing_node_ids: Optional[List[str]] = None  # limit comparison set
 
 @app.post("/api/ai/analyze")
 def ai_analyze(data: AIAnalyzeRequest):
