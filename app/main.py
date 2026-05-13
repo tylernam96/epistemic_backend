@@ -1119,7 +1119,6 @@ import time
 import random
 import tempfile
 from google.oauth2 import service_account
-from google.cloud import aiplatform
 
 creds_json = _os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
