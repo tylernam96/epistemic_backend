@@ -4,5 +4,5 @@ neo4j
 pydantic
 python-dotenv
 networkx
-google-generativeai
+google-genai
 google-auth
