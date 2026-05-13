@@ -1115,48 +1115,37 @@ import json as _json
 import math as _math
 import os as _os
 from google import genai
+from google.oauth2 import service_account
 import time
 import random
-import tempfile
-from google.oauth2 import service_account
 
+# Build credentials from env var
 creds_json = _os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
 if creds_json:
-    # Parse the JSON
-    creds_info = json.loads(creds_json)
-    
-    # Create credentials object directly
+    creds_info = _json.loads(creds_json)
     credentials = service_account.Credentials.from_service_account_info(
         creds_info,
-        scopes=['https://www.googleapis.com/auth/cloud-platform']
+        scopes=["https://www.googleapis.com/auth/cloud-platform"]
     )
-    
-    # Get project ID from the credentials
-    project_id = creds_info.get('project_id')
+    project_id = creds_info.get("project_id")
 else:
-    # Fallback to default credentials location
     credentials = None
-    project_id = _os.environ.get("GOOGLE_CLOUD_PROJECT")
+    project_id = _os.environ.get("GCP_PROJECT_ID")
 
-# 2. Now initialize AI Platform with explicit credentials
-aiplatform.init(
-    project=project_id,
-    location='us-central1',  # or your preferred region
-    credentials=credentials
-)
-
-REQUESTS_PER_MINUTE = 45  # adjust to your quota limit
-_DELAY = 60 / REQUESTS_PER_MINUTE
-
-_GCP_PROJECT  = _os.environ.get("GCP_PROJECT_ID", "your-gcp-project-id")
+_GCP_PROJECT  = project_id or _os.environ.get("GCP_PROJECT_ID", "")
 _GCP_LOCATION = _os.environ.get("GCP_LOCATION", "us-central1")
 
+# Pass credentials explicitly to the genai client
 _client = genai.Client(
     vertexai=True,
     project=_GCP_PROJECT,
     location=_GCP_LOCATION,
+    credentials=credentials,
 )
+
+REQUESTS_PER_MINUTE = 45
+_DELAY = 60 / REQUESTS_PER_MINUTE
 
 _CHAT_MODEL  = "gemini-2.5-flash"
 _EMBED_MODEL = "publishers/google/models/text-embedding-004"
